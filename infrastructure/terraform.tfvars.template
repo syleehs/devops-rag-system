@@ -1,0 +1,34 @@
+# AWS Configuration
+aws_region = "us-east-1"
+environment = "development"
+
+# Project
+project_name = "devops-rag"
+
+# VPC
+vpc_cidr = "10.0.0.0/16"
+public_subnets  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnets = ["10.0.101.0/24", "10.0.102.0/24"]
+
+# Database
+db_name = "devops_rag"
+db_username = "postgres"
+db_instance_class = "db.t4g.micro"
+db_allocated_storage = 20
+db_max_storage = 100
+backup_retention_days = 7
+enable_multi_az = false
+
+# ECS
+container_image = "YOUR_AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/devops-rag"
+container_tag = "latest"
+ecs_task_cpu = 512
+ecs_task_memory = 1024
+ecs_desired_count = 1
+ecs_max_count = 3
+
+# Monitoring
+log_retention_days = 30
+
+# API Keys (IMPORTANT: Use AWS Secrets Manager or environment variables in production)
+anthropic_api_key = "sk-ant-YOUR_API_KEY_HERE"

@@ -1,0 +1,35 @@
+devops-rag-system/
+├── backend/
+│   ├── main.py                 # FastAPI app
+│   ├── rag_pipeline.py         # RAG logic
+│   ├── metrics.py              # CloudWatch metrics
+│   ├── config.py               # Configuration
+│   ├── requirements.txt         # Python dependencies
+│   └── Dockerfile              # Container image
+├── infrastructure/
+│   ├── main.tf                 # Main Terraform config
+│   ├── rds.tf                  # RDS PostgreSQL setup
+│   ├── ecs.tf                  # ECS task definition
+│   ├── networking.tf           # VPC, security groups
+│   ├── iam.tf                  # IAM roles/policies
+│   ├── monitoring.tf           # CloudWatch setup
+│   ├── variables.tf            # Variables
+│   ├── outputs.tf              # Outputs
+│   ├── terraform.tfvars        # Values (gitignore this)
+│   └── .gitignore              # Ignore sensitive files
+├── knowledge_base/
+│   ├── adr_001_kubernetes_cost_optimization.md
+│   ├── adr_002_incident_response_automation.md
+│   ├── best_practices_sre.md
+│   ├── best_practices_terraform.md
+│   └── playbooks_incident_response.md
+├── scripts/
+│   ├── ingest_knowledge_base.py # Load ADRs into database
+│   ├── test_rag_queries.py      # Test queries
+│   └── load_test.sh             # Load testing script
+├── .github/
+│   └── workflows/
+│       └── deploy.yml           # CI/CD pipeline (optional)
+├── README.md                     # Comprehensive documentation
+├── docker-compose.yml            # Local development
+└── .gitignore
