@@ -120,55 +120,6 @@ resource "aws_ecs_task_definition" "devops_rag" {
   }
 }
 
-# Application Load Balancer
-resource "aws_lb" "devops_rag" {
-  name               = "${var.project_name}-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = module.vpc.public_subnets
-
-  enable_deletion_protection = false
-
-  tags = {
-    Name = "${var.project_name}-alb"
-  }
-}
-
-# Target Group
-resource "aws_lb_target_group" "devops_rag" {
-  name        = "${var.project_name}-tg"
-  port        = 8000
-  protocol    = "HTTP"
-  vpc_id      = module.vpc.vpc_id
-  target_type = "ip"
-
-  health_check {
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    timeout             = 5
-    interval            = 30
-    path                = "/health"
-    matcher             = "200"
-  }
-
-  tags = {
-    Name = "${var.project_name}-tg"
-  }
-}
-
-# ALB Listener
-resource "aws_lb_listener" "devops_rag" {
-  load_balancer_arn = aws_lb.devops_rag.arn
-  port              = "80"
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.devops_rag.arn
-  }
-}
-
 # ECS Service
 resource "aws_ecs_service" "devops_rag" {
   name            = "${var.project_name}-service"
@@ -178,19 +129,12 @@ resource "aws_ecs_service" "devops_rag" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = module.vpc.private_subnets
+    subnets          = module.vpc.public_subnets
     security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = false
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.devops_rag.arn
-    container_name   = var.project_name
-    container_port   = 8000
+    assign_public_ip = true
   }
 
   depends_on = [
-    aws_lb_listener.devops_rag,
     aws_iam_role_policy.ecs_task_execution_secrets_policy
   ]
 

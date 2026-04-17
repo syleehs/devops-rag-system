@@ -69,7 +69,6 @@ logs/
 node_modules/
 
 # Docker
-.dockerignore
 docker-compose.override.yml
 
 # Testing
@@ -81,3 +80,8 @@ htmlcov/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Generated/ephemeral files
+infrastructure/tfplan
+deploy.log
+infrastructure/terraform.tfvars.bak

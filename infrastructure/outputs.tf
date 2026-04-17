@@ -1,13 +1,3 @@
-output "alb_dns_name" {
-  description = "DNS name of the load balancer"
-  value       = aws_lb.devops_rag.dns_name
-}
-
-output "api_endpoint" {
-  description = "API endpoint URL"
-  value       = "http://${aws_lb.devops_rag.dns_name}"
-}
-
 output "rds_endpoint" {
   description = "RDS database endpoint"
   value       = aws_db_instance.postgres.endpoint
@@ -41,11 +31,6 @@ output "rds_instance_identifier" {
 output "vpc_id" {
   description = "VPC ID"
   value       = module.vpc.vpc_id
-}
-
-output "private_subnets" {
-  description = "Private subnet IDs"
-  value       = module.vpc.private_subnets
 }
 
 output "public_subnets" {
