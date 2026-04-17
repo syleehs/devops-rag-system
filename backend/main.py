@@ -4,14 +4,22 @@ Handles document ingestion, querying, and observability
 """
 
 import os
+
+# Must be set before any ONNX/tokenizer imports
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+import asyncio
 import json
 import time
 from datetime import datetime
+from functools import partial
 from typing import Optional
 import logging
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -34,8 +42,18 @@ app = FastAPI(
 
 # Initialize clients and services
 config = Config()
-metrics = CloudWatchMetrics(config)
-rag_pipeline = RAGPipeline(config, metrics)
+db_pool = ThreadedConnectionPool(
+    minconn=1,
+    maxconn=10,
+    dbname=config.db_name,
+    user=config.db_user,
+    password=config.db_password,
+    host=config.db_host,
+    port=config.db_port,
+    connect_timeout=5,
+)
+metrics = CloudWatchMetrics(config, pool=db_pool)
+rag_pipeline = RAGPipeline(config, metrics, pool=db_pool)
 anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
 
 # ==================== Pydantic Models ====================
@@ -78,15 +96,9 @@ async def health_check():
     start_time = time.time()
     
     try:
-        # Check database connectivity
-        conn = psycopg2.connect(
-            dbname=config.db_name,
-            user=config.db_user,
-            password=config.db_password,
-            host=config.db_host,
-            port=config.db_port
-        )
-        conn.close()
+        with rag_pipeline.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
         db_status = "healthy"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
@@ -244,33 +256,36 @@ Provide a clear, actionable answer."""
 async def ingest_document(document: DocumentIngest):
     """
     Ingest a new document into the knowledge base.
-    
+
     Documents are chunked, embedded, and stored in PostgreSQL with pgvector.
     """
     ingest_id = f"ingest_{int(time.time() * 1000)}"
     start_time = time.time()
-    
+
     logger.info(f"[{ingest_id}] Ingesting document: {document.title}")
-    
+
     try:
         # Chunk the document
         chunks = rag_pipeline.chunk_document(document.content, chunk_size=1000, overlap=200)
         logger.info(f"[{ingest_id}] Created {len(chunks)} chunks")
-        
-        # Generate embeddings for each chunk
-        stored_chunks = 0
-        for i, chunk in enumerate(chunks):
-            embedding = rag_pipeline.generate_embedding(chunk)
-            
-            # Store in PostgreSQL
-            rag_pipeline.store_document(
-                title=f"{document.title} (Part {i+1})",
-                content=chunk,
-                embedding=embedding,
-                category=document.category,
-                tags=document.tags or []
-            )
-            stored_chunks += 1
+
+        # Run embedding + DB writes in a thread to avoid blocking the event loop,
+        # while ensuring ONNX runs in a single dedicated thread (not the default threadpool)
+        embeddings = await asyncio.to_thread(rag_pipeline.generate_embeddings_batch, chunks)
+
+        # Store all chunks in a single connection/transaction
+        batch = [
+            {
+                'title': f"{document.title} (Part {i+1})",
+                'content': chunk,
+                'embedding': embedding,
+                'category': document.category,
+                'tags': document.tags or [],
+            }
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+        ]
+        await asyncio.to_thread(rag_pipeline.store_documents_batch, batch)
+        stored_chunks = len(batch)
         
         latency_ms = (time.time() - start_time) * 1000
         metrics.record_ingest_metric(ingest_id, document.title, stored_chunks, latency_ms)
@@ -294,27 +309,19 @@ async def ingest_document(document: DocumentIngest):
 async def list_documents():
     """List all documents in the knowledge base."""
     try:
-        conn = psycopg2.connect(
-            dbname=config.db_name,
-            user=config.db_user,
-            password=config.db_password,
-            host=config.db_host,
-            port=config.db_port
-        )
-        
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT DISTINCT title, category, COUNT(*) as chunks, 
-                       MIN(created_at) as created_at
-                FROM documents
-                GROUP BY title, category
-                ORDER BY created_at DESC
-            """)
-            documents = cur.fetchall()
-        
-        conn.close()
+        with rag_pipeline.get_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT DISTINCT title, category, COUNT(*) as chunks,
+                           MIN(created_at) as created_at
+                    FROM documents
+                    GROUP BY title, category
+                    ORDER BY created_at DESC
+                """)
+                documents = cur.fetchall()
+
         return {"documents": documents}
-        
+
     except Exception as e:
         logger.error(f"Failed to list documents: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve documents")
@@ -331,29 +338,21 @@ async def get_metrics():
 async def get_metrics_summary():
     """Get a summary of key metrics over the last hour."""
     try:
-        conn = psycopg2.connect(
-            dbname=config.db_name,
-            user=config.db_user,
-            password=config.db_password,
-            host=config.db_host,
-            port=config.db_port
-        )
-        
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT 
-                    COUNT(*) as total_queries,
-                    ROUND(AVG(latency_ms)::numeric, 2) as avg_latency_ms,
-                    ROUND(MAX(latency_ms)::numeric, 2) as max_latency_ms,
-                    ROUND(SUM(tokens_used)::numeric) as total_tokens,
-                    ROUND(SUM(cost_usd)::numeric, 4) as total_cost_usd,
-                    ROUND((SUM(cost_usd) / COUNT(*))::numeric, 6) as avg_cost_per_query
-                FROM query_metrics
-                WHERE timestamp > NOW() - INTERVAL '1 hour'
-            """)
-            summary = cur.fetchone()
-        
-        conn.close()
+        with rag_pipeline.get_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        COUNT(*) as total_queries,
+                        ROUND(AVG(latency_ms)::numeric, 2) as avg_latency_ms,
+                        ROUND(MAX(latency_ms)::numeric, 2) as max_latency_ms,
+                        ROUND(SUM(tokens_used)::numeric) as total_tokens,
+                        ROUND(SUM(cost_usd)::numeric, 4) as total_cost_usd,
+                        ROUND((SUM(cost_usd) / COUNT(*))::numeric, 6) as avg_cost_per_query
+                    FROM query_metrics
+                    WHERE timestamp > NOW() - INTERVAL '1 hour'
+                """)
+                summary = cur.fetchone()
+
         return summary or {
             "total_queries": 0,
             "avg_latency_ms": 0,

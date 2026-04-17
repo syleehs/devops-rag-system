@@ -17,7 +17,6 @@ provider "aws" {
       Project     = "DevOpsRAG"
       Environment = var.environment
       ManagedBy   = "Terraform"
-      CreatedAt   = timestamp()
     }
   }
 }

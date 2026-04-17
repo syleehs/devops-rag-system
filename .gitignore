@@ -81,3 +81,8 @@ htmlcov/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Generated/ephemeral files
+infrastructure/tfplan
+deploy.log
+infrastructure/terraform.tfvars.bak
