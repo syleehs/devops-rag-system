@@ -45,7 +45,7 @@ class RAGPipeline:
         self.metrics = metrics
         self.embedding_model = TextEmbedding('BAAI/bge-small-en-v1.5')
 
-        db_config = {
+        self._db_config = {
             'dbname': config.db_name,
             'user': config.db_user,
             'password': config.db_password,
@@ -54,9 +54,9 @@ class RAGPipeline:
             'sslmode': config.db_sslmode,
             'connect_timeout': 5,
         }
-        self.pool = pool or ThreadedConnectionPool(minconn=1, maxconn=10, **db_config)
+        self.pool = pool or ThreadedConnectionPool(minconn=1, maxconn=10, **self._db_config)
 
-        # Initialize database schema
+        # Initialize database schema (dedicated connection, not from pool)
         self._init_database()
 
     @contextmanager
@@ -73,69 +73,74 @@ class RAGPipeline:
             self.pool.putconn(conn)
     
     def _init_database(self):
-        """Initialize PostgreSQL schema with pgvector extension."""
+        """Initialize PostgreSQL schema with pgvector extension.
+
+        Uses a dedicated connection (not from the pool) with autocommit=True
+        so DDL statements execute immediately without fighting the pool's
+        commit/rollback context manager.
+        """
+        conn = psycopg2.connect(**self._db_config)
         try:
-            with self.get_conn() as conn:
-                conn.autocommit = True
+            conn.autocommit = True
 
-                with conn.cursor() as cur:
-                    cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            with conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS documents (
-                            id SERIAL PRIMARY KEY,
-                            title VARCHAR(500) NOT NULL,
-                            content TEXT NOT NULL,
-                            embedding vector(384),
-                            category VARCHAR(100),
-                            tags TEXT[],
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        )
-                    """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS documents (
+                        id SERIAL PRIMARY KEY,
+                        title VARCHAR(500) NOT NULL,
+                        content TEXT NOT NULL,
+                        embedding vector(384),
+                        category VARCHAR(100),
+                        tags TEXT[],
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
 
-                    cur.execute("DROP INDEX IF EXISTS idx_documents_embedding")
-                    cur.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_documents_embedding
-                        ON documents USING hnsw (embedding vector_cosine_ops)
-                    """)
+                cur.execute("DROP INDEX IF EXISTS idx_documents_embedding")
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_documents_embedding
+                    ON documents USING hnsw (embedding vector_cosine_ops)
+                """)
 
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS query_metrics (
-                            id SERIAL PRIMARY KEY,
-                            query_id VARCHAR(100) NOT NULL UNIQUE,
-                            query TEXT NOT NULL,
-                            success BOOLEAN NOT NULL,
-                            tokens_used INTEGER,
-                            latency_ms FLOAT,
-                            cost_usd FLOAT,
-                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        )
-                    """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS query_metrics (
+                        id SERIAL PRIMARY KEY,
+                        query_id VARCHAR(100) NOT NULL UNIQUE,
+                        query TEXT NOT NULL,
+                        success BOOLEAN NOT NULL,
+                        tokens_used INTEGER,
+                        latency_ms FLOAT,
+                        cost_usd FLOAT,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
 
-                    cur.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_query_metrics_timestamp
-                        ON query_metrics (timestamp DESC)
-                    """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_query_metrics_timestamp
+                    ON query_metrics (timestamp DESC)
+                """)
 
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS ingest_metrics (
-                            id SERIAL PRIMARY KEY,
-                            ingest_id VARCHAR(100) NOT NULL UNIQUE,
-                            title VARCHAR(500),
-                            chunks_stored INTEGER,
-                            latency_ms FLOAT,
-                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        )
-                    """)
-
-                conn.autocommit = False
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS ingest_metrics (
+                        id SERIAL PRIMARY KEY,
+                        ingest_id VARCHAR(100) NOT NULL UNIQUE,
+                        title VARCHAR(500),
+                        chunks_stored INTEGER,
+                        latency_ms FLOAT,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
 
             logger.info("Database schema initialized successfully")
 
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
+        finally:
+            conn.close()
     
     def chunk_document(self, content: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
         """

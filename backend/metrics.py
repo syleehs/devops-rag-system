@@ -44,6 +44,8 @@ class CloudWatchMetrics:
             'password': config.db_password,
             'host': config.db_host,
             'port': config.db_port,
+            'sslmode': config.db_sslmode,
+            'connect_timeout': 5,
         }
         if pool is None:
             self._own_pool = ThreadedConnectionPool(minconn=1, maxconn=5, **self.db_config)

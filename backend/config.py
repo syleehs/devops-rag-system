@@ -4,10 +4,10 @@ Manages all configuration from environment variables and defaults
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 from dotenv import load_dotenv
 
@@ -18,13 +18,14 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 def _parse_database_url(url: str) -> dict:
     """Parse DATABASE_URL into individual components."""
     parsed = urlparse(url)
+    qs = parse_qs(parsed.query or "")
     return {
         "db_name": parsed.path.lstrip("/"),
         "db_user": parsed.username or "",
         "db_password": parsed.password or "",
         "db_host": parsed.hostname or "localhost",
         "db_port": parsed.port or 5432,
-        "db_sslmode": "require" if "sslmode=require" in (parsed.query or "") else "prefer",
+        "db_sslmode": qs.get("sslmode", ["prefer"])[0],
     }
 
 
@@ -49,6 +50,9 @@ class Config:
 
     # Anthropic API
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+
+    # AWS (only used if CloudWatch metrics are enabled)
+    aws_region: str = os.getenv("AWS_REGION", "us-east-1")
 
     # Application
     environment: str = os.getenv("ENVIRONMENT", "development")
