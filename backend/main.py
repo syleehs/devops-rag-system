@@ -50,6 +50,7 @@ db_pool = ThreadedConnectionPool(
     password=config.db_password,
     host=config.db_host,
     port=config.db_port,
+    sslmode=config.db_sslmode,
     connect_timeout=5,
 )
 metrics = CloudWatchMetrics(config, pool=db_pool)

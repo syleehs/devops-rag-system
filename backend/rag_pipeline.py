@@ -51,6 +51,7 @@ class RAGPipeline:
             'password': config.db_password,
             'host': config.db_host,
             'port': config.db_port,
+            'sslmode': config.db_sslmode,
             'connect_timeout': 5,
         }
         self.pool = pool or ThreadedConnectionPool(minconn=1, maxconn=10, **db_config)
@@ -285,9 +286,9 @@ class RAGPipeline:
                         content,
                         category,
                         tags,
-                        1 - (embedding <=> %s) as similarity
+                        1 - (embedding <=> %s::vector) as similarity
                     FROM documents
-                    WHERE (1 - (embedding <=> %s)) > %s
+                    WHERE (1 - (embedding <=> %s::vector)) > %s
                     ORDER BY similarity DESC
                     LIMIT %s
                 """, (query_embedding, query_embedding, similarity_threshold, top_k))

@@ -33,7 +33,7 @@ module "vpc" {
   private_subnets = var.private_subnets
   public_subnets  = var.public_subnets
 
-  enable_nat_gateway = true
+  enable_nat_gateway = false
   enable_vpn_gateway = false
   enable_dns_hostnames = true
   enable_dns_support = true
@@ -73,18 +73,18 @@ resource "aws_security_group" "rds" {
   }
 }
 
-# Security group for ECS tasks
+# Security group for ECS tasks (public — no ALB in dev mode)
 resource "aws_security_group" "ecs_tasks" {
   name        = "${var.project_name}-ecs-tasks-sg"
   description = "Security group for ECS tasks"
   vpc_id      = module.vpc.vpc_id
 
   ingress {
-    from_port       = 8000
-    to_port         = 8000
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-    description     = "Allow traffic from ALB"
+    from_port   = 8000
+    to_port     = 8000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Allow HTTP to API - direct access"
   }
 
   egress {
@@ -96,40 +96,6 @@ resource "aws_security_group" "ecs_tasks" {
 
   tags = {
     Name = "${var.project_name}-ecs-tasks-sg"
-  }
-}
-
-# Security group for ALB
-resource "aws_security_group" "alb" {
-  name        = "${var.project_name}-alb-sg"
-  description = "Security group for Application Load Balancer"
-  vpc_id      = module.vpc.vpc_id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Allow HTTP"
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Allow HTTPS"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.project_name}-alb-sg"
   }
 }
 

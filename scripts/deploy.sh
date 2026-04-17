@@ -36,7 +36,7 @@ AWS_ACCOUNT_ID=""
 REGION=""
 REPO_URI=""
 IMAGE_TAG=""
-ALB_DNS=""
+SERVICE_URL=""
 ECS_CLUSTER=""
 ECS_SERVICE=""
 NEW_TASK_DEF_ARN=""
@@ -359,13 +359,11 @@ read_terraform_outputs() {
         return
     fi
 
-    ALB_DNS="$(printf '%s' "${outputs}" | jq -r '.alb_dns_name.value // empty')"
     ECS_CLUSTER="$(printf '%s' "${outputs}" | jq -r '.ecs_cluster_name.value // empty')"
     ECS_SERVICE="$(printf '%s' "${outputs}" | jq -r '.ecs_service_name.value // empty')"
     local rds_endpoint
     rds_endpoint="$(printf '%s' "${outputs}" | jq -r '.rds_endpoint.value // empty')"
 
-    log_ok "ALB DNS:        ${ALB_DNS:-<unset>}"
     log_ok "ECS cluster:    ${ECS_CLUSTER:-<unset>}"
     log_ok "ECS service:    ${ECS_SERVICE:-<unset>}"
     log_ok "RDS endpoint:   ${rds_endpoint:-<unset>}"
@@ -580,41 +578,89 @@ step_wait_stable() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 6 — Smoke test ALB
+# Helper — discover ECS task's public IP
+# ---------------------------------------------------------------------------
+get_task_public_ip() {
+    local task_arn
+    task_arn="$(aws ecs list-tasks \
+        --region "${REGION}" \
+        --cluster "${ECS_CLUSTER}" \
+        --service-name "${ECS_SERVICE}" \
+        --desired-status RUNNING \
+        --query 'taskArns[0]' \
+        --output text)"
+
+    if [[ -z "${task_arn}" || "${task_arn}" == "None" ]]; then
+        return 1
+    fi
+
+    local eni_id
+    eni_id="$(aws ecs describe-tasks \
+        --region "${REGION}" \
+        --cluster "${ECS_CLUSTER}" \
+        --tasks "${task_arn}" \
+        --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+        --output text)"
+
+    if [[ -z "${eni_id}" || "${eni_id}" == "None" ]]; then
+        return 1
+    fi
+
+    aws ec2 describe-network-interfaces \
+        --region "${REGION}" \
+        --network-interface-ids "${eni_id}" \
+        --query 'NetworkInterfaces[0].Association.PublicIp' \
+        --output text
+}
+
+# ---------------------------------------------------------------------------
+# Step 6 — Smoke test (direct ECS task IP — no ALB)
 # ---------------------------------------------------------------------------
 step_smoke_test() {
     CURRENT_STEP="smoke_test"
-    log_step "Step 6 — ALB smoke test"
+    log_step "Step 6 — Smoke test"
 
     if [[ $DRY_RUN -eq 1 ]]; then
-        log_warn "[dry-run] Would curl http://${ALB_DNS:-<alb>}/health"
+        log_warn "[dry-run] Would discover ECS task public IP and curl http://<ip>:8000/health"
         record "Smoke test: DRY-RUN"
         return
     fi
 
-    if [[ -z "${ALB_DNS}" ]]; then
-        die "ALB DNS name is empty — cannot run smoke test."
+    if [[ -z "${ECS_CLUSTER}" || -z "${ECS_SERVICE}" ]]; then
+        die "ECS cluster/service names missing — cannot run smoke test."
     fi
 
-    local url="http://${ALB_DNS}/health"
-    log_info "Polling ${url} (up to 30 attempts, 10s interval)..."
+    log_info "Discovering ECS task public IP (up to 30 attempts, 10s interval)..."
 
     local attempt=0
     local max_attempts=30
     local status=""
+    local public_ip=""
+
     while (( attempt < max_attempts )); do
         attempt=$((attempt + 1))
-        status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${url}" || echo '000')"
+
+        # Discover public IP (may not be assigned yet while task is starting)
+        public_ip="$(get_task_public_ip 2>/dev/null || true)"
+        if [[ -z "${public_ip}" || "${public_ip}" == "None" ]]; then
+            log_info "  attempt ${attempt}/${max_attempts}: task not ready yet — retrying in 10s"
+            sleep 10
+            continue
+        fi
+
+        local url="http://${public_ip}:8000/health"
+        status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${url}" 2>/dev/null || echo '000')"
         if [[ "${status}" == "200" ]]; then
-            log_ok "Health check returned 200 on attempt ${attempt}"
+            SERVICE_URL="http://${public_ip}:8000"
+            log_ok "Health check returned 200 at ${SERVICE_URL}/health (attempt ${attempt})"
             record "Smoke test: OK (attempt ${attempt})"
             return
         fi
-        log_info "  attempt ${attempt}/${max_attempts}: status=${status} — retrying in 10s"
+        log_info "  attempt ${attempt}/${max_attempts}: ${url} → status=${status} — retrying in 10s"
         sleep 10
     done
 
-    die "Smoke test failed: last status=${status} after ${max_attempts} attempts at ${url}"
+    die "Smoke test failed: last status=${status} after ${max_attempts} attempts"
 }
 
 # ---------------------------------------------------------------------------
@@ -630,13 +676,13 @@ step_ingest_kb() {
     fi
 
     if [[ $DRY_RUN -eq 1 ]]; then
-        log_warn "[dry-run] Would POST knowledge_base/*.md to http://${ALB_DNS:-<alb>}/ingest"
+        log_warn "[dry-run] Would POST knowledge_base/*.md to http://<task-ip>:8000/ingest"
         record "Ingest: DRY-RUN"
         return
     fi
 
-    if [[ -z "${ALB_DNS}" ]]; then
-        die "ALB DNS name is empty — cannot ingest."
+    if [[ -z "${SERVICE_URL}" ]]; then
+        die "Service URL not discovered — did the smoke test pass?"
     fi
 
     if [[ ! -d "${KB_DIR}" ]]; then
@@ -644,7 +690,7 @@ step_ingest_kb() {
         return
     fi
 
-    local url="http://${ALB_DNS}/ingest"
+    local url="${SERVICE_URL}/ingest"
     local success=0
     local failure=0
     local file title payload status
@@ -700,9 +746,10 @@ print_summary() {
     for line in "${SUMMARY[@]}"; do
         log "  • ${line}"
     done
-    if [[ -n "${ALB_DNS}" ]]; then
+    if [[ -n "${SERVICE_URL}" ]]; then
         log ""
-        log "${C_BOLD}API endpoint:${C_RESET} http://${ALB_DNS}"
+        log "${C_BOLD}API endpoint:${C_RESET} ${SERVICE_URL}"
+        log "${C_DIM}(ECS task public IP — changes on redeployment)${C_RESET}"
     fi
     log "${C_DIM}Full log: ${LOG_FILE}${C_RESET}"
     log "${C_GREEN}${C_BOLD}Deploy OK${C_RESET}"

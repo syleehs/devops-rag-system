@@ -100,7 +100,7 @@ variable "container_tag" {
 variable "ecs_task_cpu" {
   description = "ECS task CPU in CPU units (256, 512, 1024, 2048, 4096)"
   type        = number
-  default     = 512
+  default     = 256
 }
 
 variable "ecs_task_memory" {
