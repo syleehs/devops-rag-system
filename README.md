@@ -81,11 +81,18 @@ This system demonstrates operational expertise in:
 ### Diagram
 ```mermaid
 graph TD
-    Client -->|HTTP| FastAPI
-    FastAPI --> RAGPipeline
-    RAGPipeline -->|vector search| pgvector
-    RAGPipeline -->|LLM inference| GROQ
-    pgvector --- Documents
+    client[Client]
+    fly[Fly.io Proxy]
+    app[FastAPI on Fly Machines]
+    embed[fastembed BGE local]
+    neon[(Neon Postgres pgvector)]
+    groq[Groq API]
+
+    client -->|HTTPS| fly
+    fly --> app
+    app --> embed
+    app -->|vector search| neon
+    app -->|LLM inference| groq
 ```
 
 ### Key Decision Records
