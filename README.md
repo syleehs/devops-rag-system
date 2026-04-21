@@ -54,7 +54,7 @@ This system demonstrates operational expertise in:
 └────────────────────┬─────────────────────────────────────┘
                      │
 ┌────────────────────▼─────────────────────────────────────┐
-│ Fly.io Machines — FastAPI app (IAD region)               │
+│ Fly.io Machine — FastAPI app (IAD, shared-cpu-1x/512MB)  │
 │ ┌──────────────────────────────────────────────────────┐ │
 │ │ RAG Pipeline                                         │ │
 │ │ - Embeddings: fastembed (local BGE, CPU)             │ │
@@ -92,7 +92,7 @@ This system demonstrates operational expertise in:
 
 **ADR-3: Deployment Platform**
 - Decision: Fly.io Machines + Neon Postgres (replaces earlier AWS ECS + RDS stack)
-- Rationale: Sub-$10/month running cost, auto-stop when idle, no VPC/IAM/Terraform overhead; Neon branching enables cheap ephemeral preview databases
+- Rationale: Sub-$5/month running cost (1 × 512 MB Fly Machine + Neon free tier), auto-stop when idle, no VPC/IAM/Terraform overhead; Neon branching enables cheap ephemeral preview databases
 - Tradeoff: Smaller operational surface area than AWS but fewer enterprise knobs; acceptable for this workload
 
 **ADR-4: Cost Tracking Approach**
@@ -470,10 +470,11 @@ Wire these into your alerting tool of choice (Grafana, Datadog, a cron job posti
 - Inference: **$0** on free tier (rate limits apply)
 - Upgrade path: paid Groq tier or swap to OpenAI/Anthropic via `GROQ_BASE_URL` + `LLM_INPUT_COST_PER_M`/`LLM_OUTPUT_COST_PER_M` env vars
 
-**Platform:**
-- Fly.io Machines (shared-cpu-1x, auto-stop): ~$0–5/month depending on traffic
-- Neon Postgres (free tier): $0 for dev workloads; paid tiers start ~$19/month for higher compute hours
-- **Total platform:** ~$0–25/month typical
+**Platform** (current config: 1 × `shared-cpu-1x` @ 512 MB, auto-stop when idle):
+- Fly.io Machine — **~$0–1/month** with current traffic patterns (near-zero idle, spins up per request)
+- Fly.io Machine worst case (always-on) — ~$3/month
+- Neon Postgres free tier: $0; paid tiers start ~$19/month if compute hours exceed free quota
+- **Total platform:** ~$0–3/month typical, ~$22/month if you upgrade Neon
 
 ### Optimization Strategies
 
@@ -490,9 +491,10 @@ Wire these into your alerting tool of choice (Grafana, Datadog, a cron job posti
    - Cold starts add ~500ms to first query after idle — acceptable for this workload
 
 4. **Right-Sizing Fly Machines:**
-   - Start with `shared-cpu-1x` / 512 MB in `fly.toml`
-   - Scale up only if embedding workload at ingest time saturates CPU
+   - Current: `shared-cpu-1x` / 512 MB / 1 machine (see `fly.toml`)
+   - FastAPI + fastembed BGE-small comfortably fits in 512 MB
    - `auto_stop_machines = "stop"` + `min_machines_running = 0` means you pay nothing when idle
+   - Scale to 2 machines (`fly scale count 2`) only if you need zero-downtime deploys — adds ~$3/month
 
 5. **Query Result Caching:**
    - Cache identical queries for 24 hours
