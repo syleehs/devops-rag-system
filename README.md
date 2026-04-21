@@ -2,10 +2,29 @@
 
 A production-grade Retrieval-Augmented Generation (RAG) system for DevOps best practices and architectural decisions. Built with Groq (OpenAI-compatible LLM inference), local `fastembed` embeddings, and Neon Postgres with pgvector, deployed on Fly.io.
 
-**Status:** Ready for deployment | **Last Updated:** April 2026
+**Status:** Live in production | **Last Updated:** April 2026
+
+## Try It Live
+
+The system is deployed and reachable at **https://devops-rag-system.fly.dev**.
+
+- **Interactive playground (Swagger UI):** https://devops-rag-system.fly.dev/docs
+- **Alternate docs (ReDoc):** https://devops-rag-system.fly.dev/redoc
+- **Health check:** https://devops-rag-system.fly.dev/health
+
+Quick curl:
+
+```bash
+curl -s -X POST https://devops-rag-system.fly.dev/query \
+  -H "content-type: application/json" \
+  -d '{"query":"how do we handle node health monitoring?"}' | jq .
+```
+
+> **Cold start note:** after ~5 min of idle, the first request takes ~20–30s (Fly machine wakes from auto-stop, Neon compute resumes). Subsequent requests are sub-second.
 
 ## Table of Contents
 
+- [Try It Live](#try-it-live)
 - [Overview](#overview)
 - [Architecture](#architecture)
 - [Tech Stack](#tech-stack)
@@ -266,8 +285,15 @@ fly apps destroy devops-rag-system
 ## API Usage
 
 ### Base URL
+
+Production:
 ```
-https://<your-app>.fly.dev/
+https://devops-rag-system.fly.dev/
+```
+
+Local development:
+```
+http://localhost:8000/
 ```
 
 ### Endpoints
