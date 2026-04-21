@@ -27,7 +27,7 @@ class RAGPipeline:
     
     Responsibilities:
     - Document chunking and preprocessing
-    - Embedding generation via Claude API
+    - Embedding generation via local fastembed (BAAI/bge-small-en-v1.5)
     - Semantic search via pgvector in PostgreSQL
     - Document storage and retrieval
     """

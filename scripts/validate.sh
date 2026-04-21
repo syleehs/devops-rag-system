@@ -4,7 +4,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$REPO_ROOT/venv"
 BACKEND="$REPO_ROOT/backend"
-INFRA="$REPO_ROOT/infrastructure"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -49,15 +48,7 @@ run_check "Ruff format" ruff format --check "$BACKEND" --config "$REPO_ROOT/pypr
 # 4. Pytest
 run_check "Pytest" python3 -m pytest "$REPO_ROOT/tests" -v --tb=short
 
-# 5. Terraform validate
-if command -v terraform &>/dev/null; then
-    run_check "Terraform fmt" terraform fmt -check -recursive "$INFRA"
-    run_check "Terraform validate" bash -c "cd $INFRA && terraform validate"
-else
-    printf "${YELLOW}[SKIP]${NC} Terraform (not installed)\n"
-fi
-
-# 6. Check for secrets in staged files
+# 5. Check for secrets in staged files
 run_check "No hardcoded secrets" bash -c '
     ! grep -rn --include="*.py" -E "(api_key|password|secret)\s*=\s*[\"'"'"'][^\"'"'"']{8,}" '"$BACKEND"' \
     | grep -v "os\.getenv" | grep -v "os\.environ" | grep -v "\.example" | grep -v "# " | head -5

@@ -1,6 +1,6 @@
 # DevOps Decision RAG System
 
-A production-grade Retrieval-Augmented Generation (RAG) system for DevOps best practices and architectural decisions. Built with Claude API, PostgreSQL with pgvector, and deployed on AWS infrastructure.
+A production-grade Retrieval-Augmented Generation (RAG) system for DevOps best practices and architectural decisions. Built with Groq (OpenAI-compatible LLM inference), local `fastembed` embeddings, and Neon Postgres with pgvector, deployed on Fly.io.
 
 **Status:** Ready for deployment | **Last Updated:** April 2026
 
@@ -22,18 +22,19 @@ A production-grade Retrieval-Augmented Generation (RAG) system for DevOps best p
 
 This system demonstrates operational expertise in:
 
-- **LLM Integration:** Claude API for semantic understanding and response generation
+- **LLM Integration:** Groq (OpenAI-compatible API) for response generation
+- **Local Embeddings:** `fastembed` with BAAI/bge-small-en-v1.5 — no LLM calls during retrieval
 - **Vector Search:** PostgreSQL with pgvector for semantic similarity matching
-- **Infrastructure as Code:** Terraform for reproducible, auditable infrastructure
-- **Cloud Operations:** AWS RDS, ECS, Load Balancing, and CloudWatch monitoring
-- **Cost Awareness:** Per-request cost tracking and optimization strategies
-- **Observability:** Prometheus-compatible metrics and CloudWatch integration
+- **Platform-as-a-Service:** Fly.io Machines with auto-stop/auto-start for cost control
+- **Managed Database:** Neon serverless Postgres with branching and autoscaling
+- **Cost Awareness:** Per-request cost tracking (input/output tokens, configurable per provider)
+- **Observability:** In-DB query/ingest metrics tables + structured logs
 
 ### Key Features
 
 - **Semantic Search:** Query a knowledge base of DevOps best practices using natural language
 - **Cost Tracking:** Monitor API costs and query efficiency in real-time
-- **High Availability:** Multi-AZ RDS with auto-scaling ECS tasks
+- **High Availability:** Neon multi-region failover with auto-starting Fly.io Machines
 - **Observability:** Comprehensive metrics for latency, token usage, and costs
 - **Production Ready:** Health checks, error handling, and proper logging
 
@@ -44,43 +45,47 @@ This system demonstrates operational expertise in:
 ### System Design
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ Client Applications                                      │
-│ (curl, SDKs, monitoring tools)                         │
-└────────────────────┬────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ Clients (curl, SDKs, monitoring tools)                   │
+└────────────────────┬─────────────────────────────────────┘
+                     │ HTTPS
+┌────────────────────▼─────────────────────────────────────┐
+│ Fly.io Proxy (TLS termination, global anycast)           │
+└────────────────────┬─────────────────────────────────────┘
                      │
-┌────────────────────▼────────────────────────────────────┐
-│ Application Load Balancer (ALB)                         │
-│ - Distributes traffic across ECS tasks                  │
-│ - Health checks every 30 seconds                        │
-│ - TLS termination ready (HTTP for dev)                 │
-└────────────────────┬────────────────────────────────────┘
+┌────────────────────▼─────────────────────────────────────┐
+│ Fly.io Machines — FastAPI app (IAD region)               │
+│ ┌──────────────────────────────────────────────────────┐ │
+│ │ RAG Pipeline                                         │ │
+│ │ - Embeddings: fastembed (local BGE, CPU)             │ │
+│ │ - Retrieval: pgvector cosine similarity              │ │
+│ │ - Inference: Groq (OpenAI-compatible HTTP)           │ │
+│ │ - Metrics: in-DB query_metrics / ingest_metrics      │ │
+│ └──────────────────────────────────────────────────────┘ │
+│ auto_stop_machines=stop, min_machines_running=0          │
+└────────────────────┬─────────────────────────────────────┘
                      │
-┌────────────────────▼────────────────────────────────────┐
-│ ECS Fargate Tasks (Auto-scaling)                       │
-│ ┌────────────────────────────────────────────────────┐  │
-│ │ FastAPI Application (Python)                       │  │
-│ │ ┌──────────────────────────────────────────────┐   │  │
-│ │ │ RAG Pipeline                                  │   │  │
-│ │ │ - Embedding generation (Claude API)           │   │  │
-│ │ │ - Document retrieval (pgvector)               │   │  │
-│ │ │ - Response generation (Claude API)            │   │  │
-│ │ │ - Metrics tracking                            │   │  │
-│ │ └──────────────────────────────────────────────┘   │  │
-│ └────────────────────────────────────────────────────┘  │
-│ Min: 1, Max: 3 instances (CPU/Memory scaling)           │
-└────────────────────┬────────────────────────────────────┘
-                     │
+                     │ TLS over public network
         ┌────────────┴──────────────┐
         │                           │
-┌───────▼──────────────┐   ┌────────▼──────────────────┐
-│ PostgreSQL RDS       │   │ CloudWatch / Metrics      │
-│ - documents table    │   │ - Latency metrics         │
-│ - query_metrics      │   │ - Token usage tracking    │
-│ - ingest_metrics     │   │ - Cost tracking           │
-│ - pgvector index     │   │ - Performance alarms      │
-│ Multi-AZ ready       │   │ - Auto-scaling triggers   │
-└──────────────────────┘   └───────────────────────────┘
+┌───────▼──────────────┐   ┌────────▼───────────────────┐
+│ Neon Postgres        │   │ Groq API                   │
+│ - documents table    │   │ (api.groq.com/openai/v1)   │
+│ - query_metrics      │   │ - llama-3.3-70b-versatile  │
+│ - ingest_metrics     │   │ - Free tier, OpenAI SDK    │
+│ - pgvector index     │   └────────────────────────────┘
+│ Serverless branching │
+└──────────────────────┘
+```
+
+### Diagram
+```mermaid
+graph TD
+    Client -->|HTTP| FastAPI
+    FastAPI --> RAGPipeline
+    RAGPipeline -->|vector search| pgvector
+    RAGPipeline -->|LLM inference| GROQ
+    pgvector --- Documents
 ```
 
 ### Key Decision Records
@@ -90,19 +95,19 @@ This system demonstrates operational expertise in:
 - Rationale: Cost control, ACID guarantees, easier backup/restore, pgvector is production-grade
 - Tradeoff: Slightly lower throughput vs. Pinecone, but full control over scaling
 
-**ADR-2: LLM API Strategy**
-- Decision: Claude API for both embeddings and inference
-- Rationale: Single vendor reduces integration complexity, consistent models, cost-effective embeddings
-- Tradeoff: Vendor lock-in mitigated by abstraction layer (could swap to OpenAI)
+**ADR-2: LLM & Embedding Strategy**
+- Decision: Local `fastembed` (BGE-small-en-v1.5) for embeddings, Groq for inference via OpenAI-compatible API
+- Rationale: Local embeddings eliminate per-retrieval API cost and network latency; Groq free tier + OpenAI SDK keeps the inference layer pluggable (any OpenAI-compatible provider works)
+- Tradeoff: CPU-bound embedding at ingest time; accept Groq's rate limits on free tier
 
 **ADR-3: Deployment Platform**
-- Decision: ECS Fargate (not EKS)
-- Rationale: Simpler operational burden, no cluster management, cost-effective for stateless workloads
-- Tradeoff: Less flexibility than Kubernetes, adequate for RAG workload
+- Decision: Fly.io Machines + Neon Postgres (replaces earlier AWS ECS + RDS stack)
+- Rationale: Sub-$10/month running cost, auto-stop when idle, no VPC/IAM/Terraform overhead; Neon branching enables cheap ephemeral preview databases
+- Tradeoff: Smaller operational surface area than AWS but fewer enterprise knobs; acceptable for this workload
 
 **ADR-4: Cost Tracking Approach**
-- Decision: Per-request granular tracking in PostgreSQL, CloudWatch for aggregates
-- Rationale: Understand cost-per-feature, identify expensive queries, optimize budget
+- Decision: Per-request granular tracking in `query_metrics` / `ingest_metrics` Postgres tables; cost-per-M-token rates configurable via env vars (default 0 for Groq free tier)
+- Rationale: Understand cost-per-feature, identify expensive queries, enable easy provider swaps without rewiring cost code
 - Tradeoff: Slightly higher storage overhead, but critical for production cost control
 
 ---
@@ -116,22 +121,21 @@ This system demonstrates operational expertise in:
 - **pgvector 0.5+** - Vector similarity search
 
 ### AI/ML
-- **Claude API** - Embeddings and inference
-  - Model: `claude-3-5-sonnet-20241022` (embeddings)
-  - Model: `claude-opus-4-1-20250805` (inference)
+- **fastembed** (0.4+) — Local ONNX embedding model, no API calls
+  - Model: `BAAI/bge-small-en-v1.5` (384-dim)
+- **Groq** — OpenAI-compatible LLM inference (default: `llama-3.3-70b-versatile`)
+- **openai** Python SDK — provider-agnostic interface for Groq, OpenAI, or any OpenAI-compatible endpoint
 
 ### Infrastructure
-- **AWS RDS** - Managed PostgreSQL database
-- **AWS ECS Fargate** - Serverless container orchestration
-- **AWS ALB** - Application load balancing
-- **AWS CloudWatch** - Monitoring and logging
-- **AWS Secrets Manager** - Sensitive data management
-- **Terraform** - Infrastructure as Code
+- **Fly.io Machines** — Firecracker microVMs with auto-stop/auto-start
+- **Neon** — Serverless Postgres with branching
+- **Fly.io Secrets** — Encrypted at rest, injected as env vars at runtime
+- **macOS Keychain** (local dev) — Secrets stored outside `.env`
 
 ### Monitoring
-- **CloudWatch Metrics** - Performance monitoring
-- **CloudWatch Logs** - Structured logging
-- **Prometheus Format** - Metrics export compatibility
+- **In-DB metrics** — `query_metrics` and `ingest_metrics` Postgres tables
+- **Structured logs** — `fly logs` for streaming, per-machine tailing
+- **Optional CloudWatch bridge** — `metrics.py` supports AWS CloudWatch if `AWS_REGION` + creds are set
 
 ---
 
@@ -140,10 +144,9 @@ This system demonstrates operational expertise in:
 ### Prerequisites
 
 - Python 3.11+
-- PostgreSQL 14+ with pgvector extension
-- AWS account with credentials configured
-- Anthropic API key
-- Terraform 1.0+
+- PostgreSQL 14+ with `pgvector` (local Docker, or a Neon project)
+- Groq API key (free tier at https://console.groq.com)
+- Fly.io CLI (`flyctl`) — only required for deployment
 
 ### Local Development
 
@@ -208,106 +211,64 @@ This system demonstrates operational expertise in:
 
 ## Deployment
 
+Fly.io is the production target (see `fly.toml`). The schema is auto-created by FastAPI on first startup, so there's no separate migration step.
+
 ### Prerequisites
 
-1. **AWS Account Setup:**
+- `flyctl` installed — `brew install flyctl` (macOS) or see https://fly.io/docs/flyctl/install
+- `fly auth login`
+- A Neon project (free tier is fine) — grab the pooled connection string from the Neon console
+- A Groq API key — https://console.groq.com
+
+### Deploy
+
+1. **Create the Fly app (first time only):**
    ```bash
-   aws configure
-   export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+   fly launch --no-deploy --copy-config
    ```
 
-2. **Build and Push Docker Image:**
+2. **Set secrets** (encrypted, injected at runtime — never touches the repo or image):
    ```bash
-   # Build
-   docker build -f backend/Dockerfile -t devops-rag:latest .
-   
-   # Create ECR repository
-   aws ecr create-repository --repository-name devops-rag --region us-east-1
-   
-   # Login to ECR
-   aws ecr get-login-password --region us-east-1 | docker login \
-     --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
-   
-   # Tag and push
-   docker tag devops-rag:latest $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/devops-rag:latest
-   docker push $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/devops-rag:latest
+   fly secrets set \
+     DATABASE_URL="postgresql://<user>:<pwd>@<neon-host>/neondb?sslmode=require" \
+     GROQ_API_KEY="gsk_..."
    ```
 
-3. **Prepare Terraform:**
+3. **Deploy:**
    ```bash
-   cd infrastructure
-   
-   # Copy and customize
-   cp terraform.tfvars.template terraform.tfvars
-   
-   # Edit terraform.tfvars:
-   # - Set your AWS account ID
-   # - Set your Anthropic API key
-   # - Adjust environment and sizing as needed
+   fly deploy
    ```
+   Fly builds `backend/Dockerfile`, rolls out machines one at a time, runs health checks, and promotes on success.
 
-4. **Deploy Infrastructure:**
+4. **Ingest the knowledge base** (one-time, against the deployed API):
    ```bash
-   # Initialize Terraform
-   terraform init
-   
-   # Review changes
-   terraform plan
-   
-   # Apply configuration
-   terraform apply
-   
-   # Save outputs
-   terraform output -json > outputs.json
-   ```
-
-5. **Initialize Database:**
-   ```bash
-   # Get RDS endpoint from outputs
-   RDS_ENDPOINT=$(jq -r '.rds_address.value' outputs.json)
-   
-   # Run database initialization (handled by FastAPI on startup)
-   # The schema is created automatically on first run
-   ```
-
-6. **Ingest Knowledge Base:**
-   ```bash
-   # Get API endpoint
-   API_ENDPOINT=$(jq -r '.api_endpoint.value' outputs.json)
-   
-   # Ingest documents
-   python scripts/ingest_knowledge_base.py --endpoint $API_ENDPOINT
+   python scripts/ingest_knowledge_base.py --endpoint https://<your-app>.fly.dev
    ```
 
 ### Monitoring Deployment
 
 ```bash
-# Check ECS service status
-aws ecs describe-services \
-  --cluster devops-rag-cluster \
-  --services devops-rag-service \
-  --region us-east-1
+fly status -a devops-rag-system            # machine state
+fly logs -a devops-rag-system              # stream logs
+fly releases -a devops-rag-system          # deploy history
+fly secrets list -a devops-rag-system      # confirm secrets present (values hidden)
+```
 
-# View logs
-aws logs tail /ecs/devops-rag --follow
+### Rollback
 
-# Check CloudWatch metrics
-aws cloudwatch get-metric-statistics \
-  --namespace DevOpsRAG \
-  --metric-name QueryLatency \
-  --start-time 2024-01-01T00:00:00Z \
-  --end-time 2024-01-01T23:59:59Z \
-  --period 300 \
-  --statistics Average,Maximum
+```bash
+fly releases -a devops-rag-system          # find the previous release version
+fly deploy --image <previous-release-image>
 ```
 
 ### Cleanup
 
 ```bash
-# Destroy all resources
-terraform destroy
+# Destroy the Fly app (removes machines, secrets, volumes; release history kept)
+fly apps destroy devops-rag-system
 
-# Confirm by typing 'yes'
+# Delete the Neon project (removes the database)
+# Neon console → Project settings → Delete project
 ```
 
 ---
@@ -316,7 +277,7 @@ terraform destroy
 
 ### Base URL
 ```
-http://{load-balancer-dns}/
+https://<your-app>.fly.dev/
 ```
 
 ### Endpoints
@@ -330,7 +291,7 @@ GET /health
   "status": "healthy",
   "timestamp": "2024-01-01T12:00:00Z",
   "database": "healthy",
-  "anthropic_api": "healthy"
+  "llm_api": "healthy"
 }
 ```
 
@@ -364,7 +325,7 @@ POST /query
     "cost_usd": 0.004521,
     "embedding_latency_ms": 150.23,
     "retrieval_latency_ms": 245.67,
-    "claude_latency_ms": 854.55,
+    "llm_latency_ms": 854.55,
     "num_sources": 3
   }
 }
@@ -446,7 +407,7 @@ GET /metrics/summary
 **Latency Metrics:**
 - `embedding_latency_ms` - Time to generate embeddings
 - `retrieval_latency_ms` - Time to search and retrieve documents
-- `claude_latency_ms` - Time for Claude API inference
+- `llm_latency_ms` - Time for LLM (Groq) inference
 - `query_latency_ms` - Total end-to-end query time
 
 **Usage Metrics:**
@@ -460,14 +421,12 @@ GET /metrics/summary
 - `cost_per_query` - Average cost per query
 
 **Infrastructure Metrics:**
-- `rds_cpu_utilization` - Database CPU usage
-- `rds_connections` - Active database connections
-- `ecs_cpu_utilization` - Task CPU usage
-- `ecs_memory_utilization` - Task memory usage
+- Fly.io exposes machine CPU/memory via `fly dashboard` and `fly metrics`
+- Neon exposes connection count, DB CPU, and autoscaling events in the Neon console
 
-### CloudWatch Dashboards
+### Dashboards
 
-Recommended custom dashboard configuration:
+The project ships with in-DB metrics tables (`query_metrics`, `ingest_metrics`). Recommended external dashboards:
 
 ```json
 {
@@ -491,32 +450,24 @@ Recommended custom dashboard configuration:
 }
 ```
 
-### Setting Alarms
+### Setting Alerts
 
-```bash
-# Query latency alarm (p99 > 5 seconds)
-aws cloudwatch put-metric-alarm \
-  --alarm-name devops-rag-latency-high \
-  --alarm-description "Alert when p99 query latency exceeds 5 seconds" \
-  --namespace DevOpsRAG \
-  --metric-name QueryLatency \
-  --statistic p99 \
-  --period 300 \
-  --threshold 5000 \
-  --comparison-operator GreaterThanThreshold \
-  --evaluation-periods 2
+Query the in-DB metrics tables directly (cheap and no external deps):
 
-# Cost anomaly alarm
-aws cloudwatch put-metric-alarm \
-  --alarm-name devops-rag-cost-anomaly \
-  --alarm-description "Alert when hourly cost exceeds threshold" \
-  --namespace DevOpsRAG \
-  --metric-name QueryCostUSD \
-  --statistic Sum \
-  --period 3600 \
-  --threshold 50 \
-  --comparison-operator GreaterThanThreshold
+```sql
+-- p99 query latency over the last hour
+SELECT percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_ms
+FROM query_metrics
+WHERE created_at > NOW() - INTERVAL '1 hour';
+
+-- Hourly cost burn
+SELECT date_trunc('hour', created_at) AS hour, SUM(cost_usd) AS usd
+FROM query_metrics
+WHERE created_at > NOW() - INTERVAL '24 hours'
+GROUP BY 1 ORDER BY 1 DESC;
 ```
+
+Wire these into your alerting tool of choice (Grafana, Datadog, a cron job posting to Slack, etc.). If you re-enable the CloudWatch bridge in `metrics.py`, standard AWS CloudWatch alarms still work.
 
 ---
 
@@ -524,19 +475,15 @@ aws cloudwatch put-metric-alarm \
 
 ### Cost Breakdown (Monthly Estimate)
 
-**Claude API Costs:**
-- Embeddings: ~$0.02 per 1M input tokens (~$5/month typical)
-- Inference: ~$0.045 per 1M output tokens (~$15/month typical)
-- **Total API:** ~$20/month
+**LLM Costs (Groq free tier):**
+- Embeddings: **$0** — generated locally via `fastembed`
+- Inference: **$0** on free tier (rate limits apply)
+- Upgrade path: paid Groq tier or swap to OpenAI/Anthropic via `GROQ_BASE_URL` + `LLM_INPUT_COST_PER_M`/`LLM_OUTPUT_COST_PER_M` env vars
 
-**AWS Infrastructure:**
-- RDS (db.t4g.micro): ~$15/month
-- ECS Fargate (1 task): ~$30/month
-- Data transfer: ~$5/month
-- CloudWatch: ~$5/month
-- **Total AWS:** ~$55/month
-
-**Total Estimated Monthly Cost: ~$75**
+**Platform:**
+- Fly.io Machines (shared-cpu-1x, auto-stop): ~$0–5/month depending on traffic
+- Neon Postgres (free tier): $0 for dev workloads; paid tiers start ~$19/month for higher compute hours
+- **Total platform:** ~$0–25/month typical
 
 ### Optimization Strategies
 
@@ -548,13 +495,14 @@ aws cloudwatch put-metric-alarm \
    - Generate embeddings in batches when ingesting documents
    - Estimated savings: 20-25% of embedding costs
 
-3. **RDS Reserved Instances:**
-   - Switch to 1-year RI for 40-50% savings on database costs
-   - Estimated savings: $10-15/month
+3. **Neon Autosuspend:**
+   - Compute autosuspends after inactivity (default 5 min on free tier)
+   - Cold starts add ~500ms to first query after idle — acceptable for this workload
 
-4. **Right-Sizing ECS Tasks:**
-   - Monitor actual CPU/memory usage and downsize if needed
-   - Start with 512 CPU / 1024 MB, scale up only if needed
+4. **Right-Sizing Fly Machines:**
+   - Start with `shared-cpu-1x` / 512 MB in `fly.toml`
+   - Scale up only if embedding workload at ingest time saturates CPU
+   - `auto_stop_machines = "stop"` + `min_machines_running = 0` means you pay nothing when idle
 
 5. **Query Result Caching:**
    - Cache identical queries for 24 hours
@@ -647,24 +595,28 @@ Solution:
 **High Query Latency (>5 seconds):**
 ```
 Possible causes:
-1. RDS CPU high - Check CloudWatch RDS metrics
-2. Cold start - First query after deployment is slower
-3. Large context - Document size impacting retrieval
+1. Neon compute is suspended (autosuspend) — first query wakes it (~500ms penalty)
+2. Fly machine cold start (auto_stop was triggered by idle)
+3. Groq rate-limit / queue — free tier has per-minute token limits
+4. Large context — too many chunks retrieved
 
 Solutions:
-1. Scale RDS up (db.t4g.small)
-2. Reduce top_k parameter in queries
-3. Check network connectivity to RDS
+1. Check Neon dashboard for compute activity / autosuspend state
+2. Warm the app with a periodic health check if cold starts are unacceptable
+3. Reduce top_k in queries
+4. Upgrade Groq tier or swap model via GROQ_MODEL env var
 ```
 
 **Database Connection Failed:**
 ```
-Error: "psycopg2.OperationalError: could not translate host name"
+Error: "psycopg2.OperationalError: password authentication failed"
+       or "could not translate host name"
 
 Solutions:
-1. Verify RDS endpoint in environment variables
-2. Check security group allows port 5432 from ECS tasks
-3. Ensure RDS is in same VPC as ECS
+1. Confirm DATABASE_URL secret is set in Fly: fly secrets list
+2. If rotated in Neon console, also update: fly secrets set DATABASE_URL="..."
+3. Verify sslmode=require is in the URL (Neon requires TLS)
+4. Check the Neon project/branch is not suspended or deleted
 ```
 
 **High API Costs:**
@@ -693,24 +645,21 @@ MIT License - See LICENSE file for details
 For issues, questions, or contributions:
 - Create GitHub issue
 - Review architecture documentation
-- Check CloudWatch logs: `/ecs/devops-rag`
+- Check Fly logs: `fly logs -a devops-rag-system`
 
 ---
 
 ## Performance Benchmarks
 
-Tested on AWS with db.t4g.micro RDS and 512 CPU/1024 MB ECS tasks:
+Measured on Fly.io `shared-cpu-1x` (IAD) + Neon free tier + Groq `llama-3.3-70b-versatile`:
 
 | Metric | Value | Conditions |
 |--------|-------|-----------|
-| P50 Query Latency | 850ms | 5-document context |
-| P95 Query Latency | 2,100ms | 5-document context |
-| P99 Query Latency | 3,400ms | Peak load (3 tasks) |
-| Embedding Latency | 150ms | Single embedding |
-| Retrieval Latency | 245ms | pgvector search |
-| Inference Latency | 1,200ms | Claude API response |
-| Max Concurrent Queries | 15 | Before auto-scaling |
-| Daily API Cost | ~$0.33 | 100 queries/day |
+| Embedding Latency | ~85ms | Single query, warm machine |
+| Retrieval Latency | ~10ms | pgvector cosine, 50 chunks |
+| Inference Latency | ~1,200ms | Groq Llama 3.3 70B, 5-chunk context |
+| End-to-End Query | ~1,300ms | Warm, 5 sources |
+| Cost per Query | $0.00 | Groq free tier |
 
 ---
 

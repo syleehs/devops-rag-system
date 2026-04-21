@@ -85,3 +85,8 @@ htmlcov/
 infrastructure/tfplan
 deploy.log
 infrastructure/terraform.tfvars.bak
+
+# Claude Code / agent tooling state (local-only)
+.agents/
+.claude/
+skills-lock.json
