@@ -48,8 +48,13 @@ class Config:
     db_port: int = 5432
     db_sslmode: str = "prefer"
 
-    # Anthropic API
-    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    # LLM Provider (Groq via OpenAI-compatible API)
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    groq_base_url: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+    groq_model: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    # Cost per 1M tokens (defaults 0 for free tier; override for paid tiers)
+    llm_input_cost_per_m: float = float(os.getenv("LLM_INPUT_COST_PER_M", "0"))
+    llm_output_cost_per_m: float = float(os.getenv("LLM_OUTPUT_COST_PER_M", "0"))
 
     # AWS (only used if CloudWatch metrics are enabled)
     aws_region: str = os.getenv("AWS_REGION", "us-east-1")
@@ -77,8 +82,8 @@ class Config:
             self.db_port = int(os.getenv("DB_PORT", "5432"))
             self.db_sslmode = os.getenv("DB_SSLMODE", "prefer")
 
-        if not self.anthropic_api_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+        if not self.groq_api_key:
+            raise ValueError("GROQ_API_KEY environment variable is required")
 
     def is_production(self) -> bool:
         """Check if running in production."""

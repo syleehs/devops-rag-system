@@ -83,6 +83,16 @@ This system demonstrates operational expertise in:
 └──────────────────────┘   └───────────────────────────┘
 ```
 
+### Diagram
+```mermaid
+graph TD
+    Client -->|HTTP| FastAPI
+    FastAPI --> RAGPipeline
+    RAGPipeline -->|vector search| pgvector
+    RAGPipeline -->|LLM inference| GROQ
+    pgvector --- Documents
+```
+
 ### Key Decision Records
 
 **ADR-1: Vector Database Choice**
@@ -142,7 +152,7 @@ This system demonstrates operational expertise in:
 - Python 3.11+
 - PostgreSQL 14+ with pgvector extension
 - AWS account with credentials configured
-- Anthropic API key
+- Groq API key (free tier at https://console.groq.com)
 - Terraform 1.0+
 
 ### Local Development
@@ -242,7 +252,7 @@ This system demonstrates operational expertise in:
    
    # Edit terraform.tfvars:
    # - Set your AWS account ID
-   # - Set your Anthropic API key
+   # - Set your Groq API key (GROQ_API_KEY)
    # - Adjust environment and sizing as needed
    ```
 

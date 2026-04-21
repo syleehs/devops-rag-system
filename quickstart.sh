@@ -56,7 +56,7 @@ echo "Setting up environment variables..."
 if [ ! -f ".env" ]; then
     cp .env.example .env
     echo "✓ .env file created from template"
-    echo "⚠️  IMPORTANT: Edit .env and add your ANTHROPIC_API_KEY"
+    echo "⚠️  IMPORTANT: Edit .env and add your GROQ_API_KEY"
 else
     echo "✓ .env file already exists"
 fi
@@ -85,7 +85,7 @@ echo "================================"
 echo ""
 echo "Next steps:"
 echo ""
-echo "1. Edit .env and add your ANTHROPIC_API_KEY:"
+echo "1. Edit .env and add your GROQ_API_KEY:"
 echo "   nano .env"
 echo ""
 echo "2. Start the FastAPI server:"

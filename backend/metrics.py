@@ -170,17 +170,17 @@ class CloudWatchMetrics:
         except Exception as e:
             logger.error(f"Failed to record retrieval latency: {e}")
     
-    def record_claude_latency(self, latency_ms: float):
-        """Record Claude API inference latency."""
+    def record_llm_latency(self, latency_ms: float):
+        """Record LLM inference latency."""
         try:
             if self.cloudwatch:
                 self._push_cloudwatch_metric(
-                    metric_name='ClaudeLatency',
+                    metric_name='LLMLatency',
                     value=latency_ms,
                     unit='Milliseconds'
                 )
         except Exception as e:
-            logger.error(f"Failed to record Claude latency: {e}")
+            logger.error(f"Failed to record LLM latency: {e}")
     
     def record_health_check_latency(self, latency_ms: float):
         """Record health check latency."""

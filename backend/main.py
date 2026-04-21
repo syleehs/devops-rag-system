@@ -23,7 +23,7 @@ from psycopg2.pool import ThreadedConnectionPool
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import anthropic
+from openai import OpenAI
 
 from metrics import CloudWatchMetrics
 from rag_pipeline import RAGPipeline
@@ -55,7 +55,7 @@ db_pool = ThreadedConnectionPool(
 )
 metrics = CloudWatchMetrics(config, pool=db_pool)
 rag_pipeline = RAGPipeline(config, metrics, pool=db_pool)
-anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+llm_client = OpenAI(api_key=config.groq_api_key, base_url=config.groq_base_url)
 
 # ==================== Pydantic Models ====================
 
@@ -84,7 +84,7 @@ class HealthResponse(BaseModel):
     status: str
     timestamp: str
     database: str
-    anthropic_api: str
+    llm_api: str
 
 # ==================== Endpoints ====================
 
@@ -106,11 +106,11 @@ async def health_check():
         db_status = "unhealthy"
 
     try:
-        # Quick check of Anthropic API connectivity
-        anthropic_client.models.list()
+        # Quick check of LLM API connectivity
+        llm_client.models.list()
         api_status = "healthy"
     except Exception as e:
-        logger.error(f"Anthropic API health check failed: {e}")
+        logger.error(f"LLM API health check failed: {e}")
         api_status = "unhealthy"
 
     # Record latency metric
@@ -124,7 +124,7 @@ async def health_check():
         status="healthy",
         timestamp=datetime.utcnow().isoformat(),
         database=db_status,
-        anthropic_api=api_status
+        llm_api=api_status
     )
 
 @app.post("/query", response_model=QueryResponse)
@@ -136,7 +136,7 @@ async def query_knowledge_base(request: QueryRequest):
     1. Generate embeddings for the query
     2. Search PostgreSQL/pgvector for similar documents
     3. Build context from top-k results
-    4. Query Claude API for answer
+    4. Query LLM (Groq) for answer
     5. Track metrics (latency, cost, tokens)
     """
     query_id = f"query_{int(time.time() * 1000)}"
@@ -174,36 +174,42 @@ async def query_knowledge_base(request: QueryRequest):
             for doc in similar_docs
         ])
         
-        # Step 4: Query Claude API with context
-        claude_start = time.time()
-        response = anthropic_client.messages.create(
-            model="claude-opus-4-1-20250805",
+        # Step 4: Query LLM (Groq) with context
+        llm_start = time.time()
+        response = llm_client.chat.completions.create(
+            model=config.groq_model,
             max_tokens=1024,
-            system="""You are a DevOps expert assistant. Answer questions about 
-DevOps best practices, architectural decisions, and incident response procedures. 
-Use the provided context from the knowledge base. If the context doesn't contain 
-relevant information, acknowledge this and provide general best practices.""",
             messages=[
                 {
+                    "role": "system",
+                    "content": (
+                        "You are a DevOps expert assistant. Answer questions about "
+                        "DevOps best practices, architectural decisions, and incident "
+                        "response procedures. Use the provided context from the "
+                        "knowledge base. If the context doesn't contain relevant "
+                        "information, acknowledge this and provide general best practices."
+                    ),
+                },
+                {
                     "role": "user",
-                    "content": f"""Based on the following DevOps knowledge base, answer this question:
-
-Question: {request.query}
-
-Context:
-{context}
-
-Provide a clear, actionable answer."""
-                }
-            ]
+                    "content": (
+                        f"Based on the following DevOps knowledge base, answer this question:\n\n"
+                        f"Question: {request.query}\n\n"
+                        f"Context:\n{context}\n\n"
+                        f"Provide a clear, actionable answer."
+                    ),
+                },
+            ],
         )
-        
-        claude_latency_ms = (time.time() - claude_start) * 1000
-        metrics.record_claude_latency(claude_latency_ms)
-        
-        # Extract response
-        answer = response.content[0].text
-        tokens_used = response.usage.input_tokens + response.usage.output_tokens
+
+        llm_latency_ms = (time.time() - llm_start) * 1000
+        metrics.record_llm_latency(llm_latency_ms)
+
+        # Extract response (OpenAI-compatible schema)
+        answer = response.choices[0].message.content
+        input_tokens = response.usage.prompt_tokens
+        output_tokens = response.usage.completion_tokens
+        tokens_used = input_tokens + output_tokens
         
         # Step 5: Record metrics
         total_latency_ms = (time.time() - start_time) * 1000
@@ -215,10 +221,9 @@ Provide a clear, actionable answer."""
             latency_ms=total_latency_ms
         )
         
-        # Estimate cost (Claude Opus 4.1: input/output tokens pricing)
-        # This is a rough estimate - verify actual pricing
-        input_cost = response.usage.input_tokens * 0.015 / 1_000_000  # $15 per 1M input tokens
-        output_cost = response.usage.output_tokens * 0.045 / 1_000_000  # $45 per 1M output tokens
+        # Estimate cost (defaults 0 for Groq free tier; override via env vars for paid tiers)
+        input_cost = input_tokens * config.llm_input_cost_per_m / 1_000_000
+        output_cost = output_tokens * config.llm_output_cost_per_m / 1_000_000
         total_cost = input_cost + output_cost
         metrics.record_query_cost(total_cost)
         
@@ -235,7 +240,7 @@ Provide a clear, actionable answer."""
                 "cost_usd": round(total_cost, 6),
                 "embedding_latency_ms": round(embedding_latency_ms, 2),
                 "retrieval_latency_ms": round(retrieval_latency_ms, 2),
-                "claude_latency_ms": round(claude_latency_ms, 2),
+                "llm_latency_ms": round(llm_latency_ms, 2),
                 "num_sources": len(similar_docs)
             }
         )
