@@ -78,23 +78,6 @@ This system demonstrates operational expertise in:
 └──────────────────────┘
 ```
 
-### Diagram
-```mermaid
-graph TD
-    client[Client]
-    fly[Fly.io Proxy]
-    app[FastAPI on Fly Machines]
-    embed[fastembed BGE local]
-    neon[(Neon Postgres pgvector)]
-    groq[Groq API]
-
-    client -->|HTTPS| fly
-    fly --> app
-    app --> embed
-    app -->|vector search| neon
-    app -->|LLM inference| groq
-```
-
 ### Key Decision Records
 
 **ADR-1: Vector Database Choice**
@@ -671,4 +654,3 @@ Measured on Fly.io `shared-cpu-1x` (IAD) + Neon free tier + Groq `llama-3.3-70b-
 ---
 
 **Last Updated:** April 2026
-**Maintainer:** DevOps Platform Team
