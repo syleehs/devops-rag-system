@@ -10,24 +10,20 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import asyncio
-import json
+import logging
 import time
 from datetime import datetime
-from functools import partial
 from typing import Optional
-import logging
 
-import psycopg2
+from config import Config
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from metrics import CloudWatchMetrics
+from openai import OpenAI
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from openai import OpenAI
-
-from metrics import CloudWatchMetrics
 from rag_pipeline import RAGPipeline
-from config import Config
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -37,7 +33,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="DevOps Decision RAG System",
     description="RAG system for DevOps best practices and architectural decisions",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # Initialize clients and services
@@ -59,34 +55,44 @@ llm_client = OpenAI(api_key=config.groq_api_key, base_url=config.groq_base_url)
 
 # ==================== Pydantic Models ====================
 
+
 class QueryRequest(BaseModel):
     """Request model for RAG queries"""
+
     query: str
     top_k: Optional[int] = 5
     include_metadata: Optional[bool] = False
 
+
 class QueryResponse(BaseModel):
     """Response model for RAG queries"""
+
     query: str
     answer: str
     sources: list[dict]
     metadata: dict
 
+
 class DocumentIngest(BaseModel):
     """Request model for document ingestion"""
+
     title: str
     content: str
     category: str  # e.g., "adr", "best_practice", "playbook"
     tags: Optional[list[str]] = []
 
+
 class HealthResponse(BaseModel):
     """Health check response"""
+
     status: str
     timestamp: str
     database: str
     llm_api: str
 
+
 # ==================== Endpoints ====================
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -95,7 +101,7 @@ async def health_check():
     Verifies database connectivity and API availability.
     """
     start_time = time.time()
-    
+
     try:
         with rag_pipeline.get_conn() as conn:
             with conn.cursor() as cur:
@@ -121,17 +127,15 @@ async def health_check():
         raise HTTPException(status_code=503, detail="Service unavailable")
 
     return HealthResponse(
-        status="healthy",
-        timestamp=datetime.utcnow().isoformat(),
-        database=db_status,
-        llm_api=api_status
+        status="healthy", timestamp=datetime.utcnow().isoformat(), database=db_status, llm_api=api_status
     )
+
 
 @app.post("/query", response_model=QueryResponse)
 async def query_knowledge_base(request: QueryRequest):
     """
     Query the DevOps knowledge base using RAG.
-    
+
     Flow:
     1. Generate embeddings for the query
     2. Search PostgreSQL/pgvector for similar documents
@@ -141,39 +145,32 @@ async def query_knowledge_base(request: QueryRequest):
     """
     query_id = f"query_{int(time.time() * 1000)}"
     start_time = time.time()
-    
+
     logger.info(f"[{query_id}] Processing query: {request.query[:100]}")
-    
+
     try:
         # Step 1: Generate query embedding
         embedding_start = time.time()
         query_embedding = rag_pipeline.generate_embedding(request.query)
         embedding_latency_ms = (time.time() - embedding_start) * 1000
         metrics.record_embedding_latency(embedding_latency_ms)
-        
+
         # Step 2: Retrieve similar documents from pgvector
         retrieval_start = time.time()
         similar_docs = rag_pipeline.retrieve_documents(query_embedding, top_k=request.top_k)
         retrieval_latency_ms = (time.time() - retrieval_start) * 1000
         metrics.record_retrieval_latency(retrieval_latency_ms)
-        
+
         if not similar_docs:
             logger.warning(f"[{query_id}] No relevant documents found")
             metrics.record_query_metric(
-                query_id=query_id,
-                query=request.query,
-                success=False,
-                tokens_used=0,
-                latency_ms=0
+                query_id=query_id, query=request.query, success=False, tokens_used=0, latency_ms=0
             )
             raise HTTPException(status_code=404, detail="No relevant documents found")
-        
+
         # Step 3: Build context from retrieved documents
-        context = "\n\n".join([
-            f"[{doc['title']}]\n{doc['content']}"
-            for doc in similar_docs
-        ])
-        
+        context = "\n\n".join([f"[{doc['title']}]\n{doc['content']}" for doc in similar_docs])
+
         # Step 4: Query LLM (Groq) with context
         llm_start = time.time()
         response = llm_client.chat.completions.create(
@@ -210,25 +207,23 @@ async def query_knowledge_base(request: QueryRequest):
         input_tokens = response.usage.prompt_tokens
         output_tokens = response.usage.completion_tokens
         tokens_used = input_tokens + output_tokens
-        
+
         # Step 5: Record metrics
         total_latency_ms = (time.time() - start_time) * 1000
         metrics.record_query_metric(
-            query_id=query_id,
-            query=request.query,
-            success=True,
-            tokens_used=tokens_used,
-            latency_ms=total_latency_ms
+            query_id=query_id, query=request.query, success=True, tokens_used=tokens_used, latency_ms=total_latency_ms
         )
-        
+
         # Estimate cost (defaults 0 for Groq free tier; override via env vars for paid tiers)
         input_cost = input_tokens * config.llm_input_cost_per_m / 1_000_000
         output_cost = output_tokens * config.llm_output_cost_per_m / 1_000_000
         total_cost = input_cost + output_cost
         metrics.record_query_cost(total_cost)
-        
-        logger.info(f"[{query_id}] Query successful. Tokens: {tokens_used}, Latency: {total_latency_ms:.2f}ms, Cost: ${total_cost:.6f}")
-        
+
+        logger.info(
+            f"[{query_id}] Query successful. Tokens: {tokens_used}, Latency: {total_latency_ms:.2f}ms, Cost: ${total_cost:.6f}"
+        )
+
         return QueryResponse(
             query=request.query,
             answer=answer,
@@ -241,10 +236,10 @@ async def query_knowledge_base(request: QueryRequest):
                 "embedding_latency_ms": round(embedding_latency_ms, 2),
                 "retrieval_latency_ms": round(retrieval_latency_ms, 2),
                 "llm_latency_ms": round(llm_latency_ms, 2),
-                "num_sources": len(similar_docs)
-            }
+                "num_sources": len(similar_docs),
+            },
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -254,9 +249,10 @@ async def query_knowledge_base(request: QueryRequest):
             query=request.query,
             success=False,
             tokens_used=0,
-            latency_ms=(time.time() - start_time) * 1000
+            latency_ms=(time.time() - start_time) * 1000,
         )
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+
 
 @app.post("/ingest")
 async def ingest_document(document: DocumentIngest):
@@ -282,34 +278,35 @@ async def ingest_document(document: DocumentIngest):
         # Store all chunks in a single connection/transaction
         batch = [
             {
-                'title': f"{document.title} (Part {i+1})",
-                'content': chunk,
-                'embedding': embedding,
-                'category': document.category,
-                'tags': document.tags or [],
+                "title": f"{document.title} (Part {i+1})",
+                "content": chunk,
+                "embedding": embedding,
+                "category": document.category,
+                "tags": document.tags or [],
             }
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
         ]
         await asyncio.to_thread(rag_pipeline.store_documents_batch, batch)
         stored_chunks = len(batch)
-        
+
         latency_ms = (time.time() - start_time) * 1000
         metrics.record_ingest_metric(ingest_id, document.title, stored_chunks, latency_ms)
-        
+
         logger.info(f"[{ingest_id}] Ingest complete. Stored {stored_chunks} chunks in {latency_ms:.2f}ms")
-        
+
         return {
             "status": "success",
             "ingest_id": ingest_id,
             "title": document.title,
             "chunks_created": len(chunks),
             "chunks_stored": stored_chunks,
-            "latency_ms": round(latency_ms, 2)
+            "latency_ms": round(latency_ms, 2),
         }
-        
+
     except Exception as e:
         logger.error(f"[{ingest_id}] Ingestion failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Document ingestion failed: {str(e)}")
+
 
 @app.get("/documents")
 async def list_documents():
@@ -332,6 +329,7 @@ async def list_documents():
         logger.error(f"Failed to list documents: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve documents")
 
+
 @app.get("/metrics")
 async def get_metrics():
     """
@@ -339,6 +337,7 @@ async def get_metrics():
     Exposes metrics for monitoring and cost tracking.
     """
     return metrics.get_prometheus_metrics()
+
 
 @app.get("/metrics/summary")
 async def get_metrics_summary():
@@ -365,12 +364,13 @@ async def get_metrics_summary():
             "max_latency_ms": 0,
             "total_tokens": 0,
             "total_cost_usd": 0,
-            "avg_cost_per_query": 0
+            "avg_cost_per_query": 0,
         }
-        
+
     except Exception as e:
         logger.error(f"Failed to get metrics summary: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve metrics")
+
 
 @app.get("/")
 async def root():
@@ -385,30 +385,29 @@ async def root():
             "ingest": "POST /ingest",
             "documents": "GET /documents",
             "metrics": "GET /metrics",
-            "metrics_summary": "GET /metrics/summary"
-        }
+            "metrics_summary": "GET /metrics/summary",
+        },
     }
 
+
 # ==================== Error Handlers ====================
+
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
     """Custom HTTP exception handler with logging."""
     logger.error(f"HTTP Exception: {exc.detail}")
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail}
-    )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
     """Catch-all exception handler."""
     logger.error(f"Unhandled exception: {str(exc)}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
