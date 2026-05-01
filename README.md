@@ -574,7 +574,9 @@ This repo runs a full GitOps pipeline in GitHub Actions. The workflows demonstra
   - **Trivy** — Docker image CVEs at CRITICAL/HIGH (blocking, also uploads SARIF to GitHub Security)
   - **CodeQL** — taint analysis (blocking on errors)
   - **pip-audit** — dependency CVEs (**informational**; Dependabot raises bump PRs weekly). Blocking here would just create flaky red CI when an upstream dep gets a CVE filed during your sleep — the value is keeping findings visible, not gating deploys.
-- **Credential rotation as code.** The Fly deploy token rotates every month via `rotate-tokens.yml`. A long-lived org-scoped "manager" token mints short-lived deploy tokens; the manager token is never used for deploys, narrowing blast radius.
+- **Credential rotation as code.** The Fly deploy token rotates every month via `rotate-tokens.yml`. A long-lived org-scoped "manager" token mints short-lived deploy tokens; the manager token is never used for deploys, narrowing blast radius. Failure paths leave the prior token in place — the workflow only revokes after the new token is verified, so a botched rotation never leaves the system unable to deploy.
+
+- **Why rotation, not OIDC, for Fly.** GitHub Actions OIDC would let us eliminate `FLY_API_TOKEN` entirely (mint a 15-minute JWT per run, no long-lived secret to leak). Fly.io supports OIDC, but only outbound — Fly Machines can authenticate to AWS/GCP/Azure as OIDC subjects, but Fly itself does not yet **consume** external OIDC tokens. Bridging via AWS Lambda is possible but introduces an entire cloud dependency for an otherwise AWS-free repo. The day Fly ships inbound OIDC, `rotate-tokens.yml` is replaced by a `permissions: id-token: write` block; until then, monthly rotation is the operationally honest answer. **Codecov, by contrast, does support tokenless OIDC upload for public repos**, which is why this repo has no `CODECOV_TOKEN` secret.
 - **Cost guardrails.** Cleanup runs on PR close; previews never outlive their PR. Each preview costs <$0.10 (auto-stop Fly machine + free-tier Neon branch).
 
 ### Required GitHub secrets
@@ -588,7 +590,8 @@ This repo runs a full GitOps pipeline in GitHub Actions. The workflows demonstra
 | `DATABASE_URL` | Production Neon connection string for KB ingest in `deploy.yml` | Same value used by Fly's `DATABASE_URL` secret |
 | `GROQ_API_KEY` | Injected into preview Fly apps so they can call Groq | https://console.groq.com |
 | `GH_PAT_ROTATE` | Used by `rotate-tokens.yml` to update `FLY_API_TOKEN` secret | GitHub fine-grained PAT with `Actions secrets: write` |
-| `CODECOV_TOKEN` | (optional) Codecov upload token | https://app.codecov.io |
+
+> Codecov upload uses tokenless OIDC for public repos — no `CODECOV_TOKEN` needed.
 
 ### Local equivalents
 
