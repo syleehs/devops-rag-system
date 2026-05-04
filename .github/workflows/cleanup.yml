@@ -1,0 +1,57 @@
+name: Cleanup PR preview
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+  NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+  NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+  PREVIEW_APP_NAME: devops-rag-pr-${{ github.event.pull_request.number }}
+  PREVIEW_BRANCH_NAME: pr-${{ github.event.pull_request.number }}
+
+jobs:
+  cleanup:
+    name: Tear down preview infra
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Install neonctl
+        run: npm install -g neonctl
+
+      - name: Destroy Fly preview app
+        # Don't fail the workflow if the app was never created (e.g., preview workflow failed early)
+        continue-on-error: true
+        run: |
+          if flyctl status -a "$PREVIEW_APP_NAME" >/dev/null 2>&1; then
+            echo "Destroying $PREVIEW_APP_NAME"
+            flyctl apps destroy "$PREVIEW_APP_NAME" --yes
+          else
+            echo "$PREVIEW_APP_NAME does not exist; nothing to destroy."
+          fi
+
+      - name: Delete Neon branch
+        continue-on-error: true
+        run: |
+          branch_id=$(neonctl branches list --project-id "$NEON_PROJECT_ID" --output json \
+            | python3 -c "
+          import sys, json
+          name = '$PREVIEW_BRANCH_NAME'
+          for b in json.load(sys.stdin):
+              if b.get('name') == name:
+                  print(b['id'])
+                  break
+          ")
+          if [ -n "$branch_id" ]; then
+            echo "Deleting Neon branch $branch_id"
+            neonctl branches delete "$branch_id" --project-id "$NEON_PROJECT_ID"
+          else
+            echo "Branch $PREVIEW_BRANCH_NAME does not exist; nothing to delete."
+          fi

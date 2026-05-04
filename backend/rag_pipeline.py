@@ -4,34 +4,34 @@ Handles document processing, embedding generation, and semantic search
 """
 
 import logging
-from typing import List, Optional
-import json
-
 import os
+from typing import List, Optional
 
 # Prevent ONNX Runtime thread contention with uvicorn
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+from contextlib import contextmanager
+
 import psycopg2
+from fastembed import TextEmbedding
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
-from contextlib import contextmanager
-from fastembed import TextEmbedding
 
 logger = logging.getLogger(__name__)
+
 
 class RAGPipeline:
     """
     RAG (Retrieval-Augmented Generation) pipeline for DevOps knowledge base.
-    
+
     Responsibilities:
     - Document chunking and preprocessing
     - Embedding generation via local fastembed (BAAI/bge-small-en-v1.5)
     - Semantic search via pgvector in PostgreSQL
     - Document storage and retrieval
     """
-    
+
     def __init__(self, config, metrics, pool: ThreadedConnectionPool = None):
         """
         Initialize RAG pipeline.
@@ -43,16 +43,16 @@ class RAGPipeline:
         """
         self.config = config
         self.metrics = metrics
-        self.embedding_model = TextEmbedding('BAAI/bge-small-en-v1.5')
+        self.embedding_model = TextEmbedding("BAAI/bge-small-en-v1.5")
 
         self._db_config = {
-            'dbname': config.db_name,
-            'user': config.db_user,
-            'password': config.db_password,
-            'host': config.db_host,
-            'port': config.db_port,
-            'sslmode': config.db_sslmode,
-            'connect_timeout': 5,
+            "dbname": config.db_name,
+            "user": config.db_user,
+            "password": config.db_password,
+            "host": config.db_host,
+            "port": config.db_port,
+            "sslmode": config.db_sslmode,
+            "connect_timeout": 5,
         }
         self.pool = pool or ThreadedConnectionPool(minconn=1, maxconn=10, **self._db_config)
 
@@ -71,7 +71,7 @@ class RAGPipeline:
             raise
         finally:
             self.pool.putconn(conn)
-    
+
     def _init_database(self):
         """Initialize PostgreSQL schema with pgvector extension.
 
@@ -141,16 +141,16 @@ class RAGPipeline:
             raise
         finally:
             conn.close()
-    
+
     def chunk_document(self, content: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
         """
         Split document into overlapping chunks for embedding.
-        
+
         Args:
             content: Full document content
             chunk_size: Target characters per chunk
             overlap: Characters to overlap between chunks
-        
+
         Returns:
             List of document chunks
         """
@@ -164,10 +164,10 @@ class RAGPipeline:
             if end >= len(content):
                 break
             start = max(end - overlap, start + 1)
-        
+
         logger.info(f"Document chunked into {len(chunks)} pieces")
         return chunks
-    
+
     def generate_embedding(self, text: str) -> List[float]:
         """
         Generate embedding for text using local ONNX model.
@@ -195,35 +195,33 @@ class RAGPipeline:
         embeddings = [e.tolist() for e in self.embedding_model.embed(texts)]
         logger.debug(f"Generated {len(embeddings)} embeddings in batch")
         return embeddings
-    
+
     def store_document(
-        self,
-        title: str,
-        content: str,
-        embedding: List[float],
-        category: str,
-        tags: Optional[List[str]] = None
+        self, title: str, content: str, embedding: List[float], category: str, tags: Optional[List[str]] = None
     ) -> int:
         """
         Store document and embedding in PostgreSQL.
-        
+
         Args:
             title: Document title
             content: Document content
             embedding: Embedding vector
             category: Document category (adr, best_practice, etc.)
             tags: Optional list of tags
-        
+
         Returns:
             Document ID
         """
         with self.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     INSERT INTO documents (title, content, embedding, category, tags)
                     VALUES (%s, %s, %s, %s, %s)
                     RETURNING id
-                """, (title, content, embedding, category, tags or []))
+                """,
+                    (title, content, embedding, category, tags or []),
+                )
 
                 doc_id = cur.fetchone()[0]
 
@@ -247,17 +245,20 @@ class RAGPipeline:
             doc_ids = []
             with conn.cursor() as cur:
                 for doc in documents:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO documents (title, content, embedding, category, tags)
                         VALUES (%s, %s, %s, %s, %s)
                         RETURNING id
-                    """, (
-                        doc['title'],
-                        doc['content'],
-                        doc['embedding'],
-                        doc['category'],
-                        doc.get('tags') or [],
-                    ))
+                    """,
+                        (
+                            doc["title"],
+                            doc["content"],
+                            doc["embedding"],
+                            doc["category"],
+                            doc.get("tags") or [],
+                        ),
+                    )
                     doc_ids.append(cur.fetchone()[0])
 
         logger.info(f"Stored {len(doc_ids)} documents in batch")
@@ -284,7 +285,8 @@ class RAGPipeline:
         """
         with self.get_conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     SELECT
                         id,
                         title,
@@ -296,7 +298,9 @@ class RAGPipeline:
                     WHERE (1 - (embedding <=> %s::vector)) > %s
                     ORDER BY similarity DESC
                     LIMIT %s
-                """, (query_embedding, query_embedding, similarity_threshold, top_k))
+                """,
+                    (query_embedding, query_embedding, similarity_threshold, top_k),
+                )
 
                 results = cur.fetchall()
 
@@ -368,8 +372,11 @@ class RAGPipeline:
 
             with self.get_conn() as conn:
                 with conn.cursor() as cur:
+                    # Each entry in `updates` is a hard-coded literal ("title = %s",
+                    # "content = %s", etc.) — never user input. All user-controlled
+                    # values flow through `params` and are properly bound by psycopg2.
                     cur.execute(
-                        f"UPDATE documents SET {', '.join(updates)} WHERE id = %s",
+                        f"UPDATE documents SET {', '.join(updates)} WHERE id = %s",  # nosec B608
                         params,
                     )
 

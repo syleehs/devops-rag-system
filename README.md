@@ -33,6 +33,7 @@ curl -s -X POST https://devops-rag-system.fly.dev/query \
 - [API Usage](#api-usage)
 - [Monitoring & Observability](#monitoring--observability)
 - [Cost Optimization](#cost-optimization)
+- [CI/CD Pipeline](#cicd-pipeline)
 - [Contributing](#contributing)
 
 ---
@@ -541,6 +542,71 @@ def cached_query(query_hash: str):
 def get_cached_query(query: str):
     query_hash = hashlib.sha256(query.encode()).hexdigest()
     return cached_query(query_hash)
+```
+
+---
+
+## CI/CD Pipeline
+
+This repo runs a full GitOps pipeline in GitHub Actions. The workflows demonstrate ephemeral environments, automated security scanning, and credential rotation — patterns transferable to most platforms.
+
+### Pipeline overview
+
+```
+  PR opened ──► ci.yml         ─► lint, test+coverage, bandit, pip-audit, gitleaks, Trivy, CodeQL
+            └─► preview.yml    ─► spin up ephemeral Fly app + Neon branch, ingest KB, run E2E
+                                   tests, post preview URL to PR
+
+  Merge to main ► deploy.yml   ─► deploy to prod, smoke /health and /query, ingest changed KB
+
+  PR closed     ► cleanup.yml  ─► destroy Fly preview app + Neon branch
+
+  Cron (monthly)► rotate-tokens.yml ─► mint new Fly deploy token, verify it, update repo secret,
+                                       revoke prior token
+```
+
+### Why this is set up the way it is
+
+- **Per-PR previews on real infra** (not mocks). Each PR gets `devops-rag-pr-<num>.fly.dev` backed by an isolated Neon branch. E2E tests then exercise the actual stack — pgvector retrieval against a fresh DB, real LLM calls — so reviewers can click through the deployed change.
+- **Defense in depth on security scanning.** Five tools cover overlapping but distinct surfaces:
+  - **bandit** — Python SAST (blocking)
+  - **gitleaks** — committed secrets (blocking)
+  - **Trivy** — Docker image CVEs at CRITICAL/HIGH (blocking, also uploads SARIF to GitHub Security)
+  - **CodeQL** — taint analysis (blocking on errors)
+  - **pip-audit** — dependency CVEs (**informational**; Dependabot raises bump PRs weekly). Blocking here would just create flaky red CI when an upstream dep gets a CVE filed during your sleep — the value is keeping findings visible, not gating deploys.
+- **Credential rotation as code.** The Fly deploy token rotates every month via `rotate-tokens.yml`. A long-lived org-scoped "manager" token mints short-lived deploy tokens; the manager token is never used for deploys, narrowing blast radius. Failure paths leave the prior token in place — the workflow only revokes after the new token is verified, so a botched rotation never leaves the system unable to deploy.
+
+- **Why rotation, not OIDC, for Fly.** GitHub Actions OIDC would let us eliminate `FLY_API_TOKEN` entirely (mint a 15-minute JWT per run, no long-lived secret to leak). Fly.io supports OIDC, but only outbound — Fly Machines can authenticate to AWS/GCP/Azure as OIDC subjects, but Fly itself does not yet **consume** external OIDC tokens. Bridging via AWS Lambda is possible but introduces an entire cloud dependency for an otherwise AWS-free repo. The day Fly ships inbound OIDC, `rotate-tokens.yml` is replaced by a `permissions: id-token: write` block; until then, monthly rotation is the operationally honest answer. **Codecov, by contrast, does support tokenless OIDC upload for public repos**, which is why this repo has no `CODECOV_TOKEN` secret.
+- **Cost guardrails.** Cleanup runs on PR close; previews never outlive their PR. Each preview costs <$0.10 (auto-stop Fly machine + free-tier Neon branch).
+
+### Required GitHub secrets
+
+| Secret | Purpose | How to get it |
+|---|---|---|
+| `FLY_API_TOKEN` | Deploy token used by `deploy.yml` and `preview.yml` | `fly tokens create deploy -a devops-rag-system --expiry 720h` |
+| `FLY_MANAGER_TOKEN` | Long-lived org token used only by `rotate-tokens.yml` to mint new deploy tokens | `fly tokens create org` (scope: tokens) |
+| `NEON_API_KEY` | Used by `preview.yml`/`cleanup.yml` to manage branches | https://console.neon.tech/app/settings/api-keys |
+| `NEON_PROJECT_ID` | Identifies which Neon project the preview branches belong to | `neonctl projects list` |
+| `DATABASE_URL` | Production Neon connection string for KB ingest in `deploy.yml` | Same value used by Fly's `DATABASE_URL` secret |
+| `GROQ_API_KEY` | Injected into preview Fly apps so they can call Groq | https://console.groq.com |
+| `GH_PAT_ROTATE` | Used by `rotate-tokens.yml` to update `FLY_API_TOKEN` secret | GitHub fine-grained PAT with `Actions secrets: write` |
+
+> Codecov upload uses tokenless OIDC for public repos — no `CODECOV_TOKEN` needed.
+
+### Local equivalents
+
+You can run the same checks locally before pushing:
+
+```bash
+# Lint + format + tests (mirrors ci.yml)
+ruff format --check backend tests scripts
+ruff check backend tests scripts
+pytest --cov=backend --cov-report=term-missing
+
+# Security scans
+bandit -r backend -ll -ii
+pip-audit -r backend/requirements.txt --strict
+gitleaks detect --source .
 ```
 
 ---
