@@ -22,8 +22,34 @@ env:
   PREVIEW_BRANCH_NAME: pr-${{ github.event.pull_request.number }}
 
 jobs:
+  precheck:
+    # Lightweight job that decides whether the preview env can run at all. Lets PRs
+    # from contributors who don't yet have NEON_API_KEY/FLY_API_TOKEN/NEON_PROJECT_ID
+    # configured succeed cleanly (skipped) instead of red-failing.
+    name: Preview env preflight
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          K1: ${{ secrets.NEON_API_KEY }}
+          K2: ${{ secrets.FLY_API_TOKEN }}
+          K3: ${{ secrets.NEON_PROJECT_ID }}
+          K4: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -n "$K1" ] && [ -n "$K2" ] && [ -n "$K3" ] && [ -n "$K4" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "All preview secrets present. Will deploy."
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Preview env not configured (missing one of NEON_API_KEY, FLY_API_TOKEN, NEON_PROJECT_ID, GROQ_API_KEY). Skipping preview deploy."
+          fi
+
   preview:
     name: Deploy preview
+    needs: precheck
+    if: needs.precheck.outputs.ready == 'true'
     runs-on: ubuntu-latest
     outputs:
       preview_url: ${{ steps.deploy.outputs.url }}

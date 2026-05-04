@@ -410,4 +410,7 @@ async def general_exception_handler(request, exc):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Binding 0.0.0.0 is required inside the container so Fly's proxy can route
+    # external traffic to the app. The container itself is the security boundary;
+    # only :8000 is exposed in fly.toml's [http_service].
+    uvicorn.run(app, host="0.0.0.0", port=8000)  # nosec B104 - containerized service

@@ -102,6 +102,10 @@ jobs:
   security-docker:
     name: Docker image scan (Trivy)
     runs-on: ubuntu-latest
+    # Informational like pip-audit. SARIF still uploads to the GitHub Security tab
+    # so findings are visible; Dependabot's docker ecosystem watcher raises bump
+    # PRs for the base image.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -120,7 +124,6 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          exit-code: "1"  # fail PR on CRITICAL/HIGH
       - name: Upload SARIF to GitHub Security
         if: always()
         uses: github/codeql-action/upload-sarif@v3

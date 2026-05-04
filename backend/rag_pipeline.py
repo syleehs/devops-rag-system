@@ -372,8 +372,11 @@ class RAGPipeline:
 
             with self.get_conn() as conn:
                 with conn.cursor() as cur:
+                    # Each entry in `updates` is a hard-coded literal ("title = %s",
+                    # "content = %s", etc.) — never user input. All user-controlled
+                    # values flow through `params` and are properly bound by psycopg2.
                     cur.execute(
-                        f"UPDATE documents SET {', '.join(updates)} WHERE id = %s",
+                        f"UPDATE documents SET {', '.join(updates)} WHERE id = %s",  # nosec B608
                         params,
                     )
 
