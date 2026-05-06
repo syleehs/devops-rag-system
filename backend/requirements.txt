@@ -1,4 +1,4 @@
-openai>=1.40.0
+openai>=2.34.0
 # fastapi >=0.115 pulls starlette >=0.40 (fixes GHSA-f96h-pmfr-66vw, GHSA-2c2j-9gv5-cj73)
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
