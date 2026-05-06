@@ -1,0 +1,159 @@
+name: PR preview environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write  # to comment with preview URL
+
+concurrency:
+  # One preview per PR; cancel old runs when PR pushed again
+  group: preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+  NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+  NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+  PREVIEW_APP_NAME: devops-rag-pr-${{ github.event.pull_request.number }}
+  PREVIEW_BRANCH_NAME: pr-${{ github.event.pull_request.number }}
+
+jobs:
+  precheck:
+    # Lightweight job that decides whether the preview env can run at all. Lets PRs
+    # from contributors who don't yet have NEON_API_KEY/FLY_API_TOKEN/NEON_PROJECT_ID
+    # configured succeed cleanly (skipped) instead of red-failing.
+    name: Preview env preflight
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          K1: ${{ secrets.NEON_API_KEY }}
+          K2: ${{ secrets.FLY_API_TOKEN }}
+          K3: ${{ secrets.NEON_PROJECT_ID }}
+          K4: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          if [ -n "$K1" ] && [ -n "$K2" ] && [ -n "$K3" ] && [ -n "$K4" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "All preview secrets present. Will deploy."
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Preview env not configured (missing one of NEON_API_KEY, FLY_API_TOKEN, NEON_PROJECT_ID, GROQ_API_KEY). Skipping preview deploy."
+          fi
+
+  preview:
+    name: Deploy preview
+    needs: precheck
+    if: needs.precheck.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      preview_url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Install neonctl
+        run: npm install -g neonctl
+
+      # ─── Neon: create or reuse a preview branch ───────────────────────
+      - name: Create Neon branch (idempotent)
+        id: neon
+        run: |
+          # If the branch already exists (PR pushed again), reuse it.
+          existing=$(neonctl branches list --project-id "$NEON_PROJECT_ID" --output json \
+            | python3 -c "
+          import sys, json
+          name = '$PREVIEW_BRANCH_NAME'
+          for b in json.load(sys.stdin):
+              if b.get('name') == name:
+                  print(b['id'])
+                  break
+          ")
+          if [ -n "$existing" ]; then
+            echo "Reusing existing branch $existing"
+            branch_id="$existing"
+          else
+            echo "Creating new branch $PREVIEW_BRANCH_NAME"
+            branch_id=$(neonctl branches create \
+              --project-id "$NEON_PROJECT_ID" \
+              --name "$PREVIEW_BRANCH_NAME" \
+              --output json | python3 -c "import sys,json; print(json.load(sys.stdin)['branch']['id'])")
+          fi
+          # Get the pooled connection string for this branch
+          conn=$(neonctl connection-string "$branch_id" \
+            --project-id "$NEON_PROJECT_ID" \
+            --pooled --database-name neondb)
+          echo "::add-mask::$conn"
+          echo "database_url=$conn" >> "$GITHUB_OUTPUT"
+          echo "branch_id=$branch_id" >> "$GITHUB_OUTPUT"
+
+      # ─── Fly: create or reuse the preview app ─────────────────────────
+      - name: Ensure preview Fly app exists
+        run: |
+          if flyctl status -a "$PREVIEW_APP_NAME" >/dev/null 2>&1; then
+            echo "Preview app $PREVIEW_APP_NAME already exists; reusing."
+          else
+            echo "Creating preview app $PREVIEW_APP_NAME"
+            flyctl apps create "$PREVIEW_APP_NAME" --org personal
+          fi
+
+      - name: Set preview secrets
+        run: |
+          flyctl secrets set \
+            DATABASE_URL='${{ steps.neon.outputs.database_url }}' \
+            GROQ_API_KEY='${{ secrets.GROQ_API_KEY }}' \
+            -a "$PREVIEW_APP_NAME" --stage
+
+      - name: Deploy preview
+        id: deploy
+        run: |
+          flyctl deploy --remote-only -a "$PREVIEW_APP_NAME" \
+            --vm-memory 512 --vm-cpu-kind shared --vm-cpus 1
+          url="https://$PREVIEW_APP_NAME.fly.dev"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # ─── Seed the preview DB with the current KB ──────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install deps
+        run: pip install -r backend/requirements.txt
+      - name: Ingest KB into preview DB
+        env:
+          DATABASE_URL: ${{ steps.neon.outputs.database_url }}
+          GROQ_API_KEY: not-used-for-ingest
+        run: python scripts/ingest_changed_files.py
+
+      # ─── E2E tests against the live preview URL ───────────────────────
+      - name: Install E2E test deps
+        run: pip install pytest requests
+      - name: E2E tests
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
+        run: pytest tests/e2e/ -v --tb=short
+
+      # ─── Comment the preview URL on the PR ────────────────────────────
+      - name: Comment preview URL on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: preview-env
+          message: |
+            ## Preview environment ready
+
+            | | |
+            |---|---|
+            | App | [`${{ env.PREVIEW_APP_NAME }}`](${{ steps.deploy.outputs.url }}) |
+            | Health | [/health](${{ steps.deploy.outputs.url }}/health) |
+            | Docs | [/docs](${{ steps.deploy.outputs.url }}/docs) |
+            | Neon branch | `${{ env.PREVIEW_BRANCH_NAME }}` |
+
+            Both Fly app and Neon branch will be torn down when this PR closes.

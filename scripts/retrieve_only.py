@@ -4,6 +4,7 @@ Usage:
     python scripts/retrieve_only.py "how do I restart a crashed ECS task?"
     python scripts/retrieve_only.py "node health monitoring" --top-k 3 --threshold 0.5
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,10 +21,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Retrieval-only RAG query (no LLM).")
     parser.add_argument("query", help="Natural-language query.")
     parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument("--threshold", type=float, default=0.3,
-                        help="Cosine similarity threshold (default 0.3).")
-    parser.add_argument("--full", action="store_true",
-                        help="Print full chunk content (default: first 300 chars).")
+    parser.add_argument("--threshold", type=float, default=0.3, help="Cosine similarity threshold (default 0.3).")
+    parser.add_argument("--full", action="store_true", help="Print full chunk content (default: first 300 chars).")
     args = parser.parse_args()
 
     config = Config()

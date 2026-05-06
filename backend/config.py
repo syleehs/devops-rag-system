@@ -6,8 +6,7 @@ Manages all configuration from environment variables and defaults
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 

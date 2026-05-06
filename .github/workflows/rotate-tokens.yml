@@ -1,0 +1,93 @@
+name: Rotate Fly deploy token
+
+# Rotates FLY_API_TOKEN monthly. Strategy:
+#   1. Use a long-lived "manager" token (FLY_MANAGER_TOKEN) to create a new deploy token
+#   2. Verify the new token works (dry-run flyctl status)
+#   3. Update the FLY_API_TOKEN repository secret via the GitHub API
+#   4. Revoke the OLD deploy token by name suffix
+#
+# Required repo secrets:
+#   - FLY_MANAGER_TOKEN: org-scoped Fly token with `tokens` permission. Long-lived but
+#     never used for deploys, so blast radius is low if exposed.
+#   - GH_PAT_ROTATE: GitHub Personal Access Token with `repo` scope (or fine-grained:
+#     "Actions secrets: write"). Used to update the FLY_API_TOKEN secret.
+#
+# Failure modes:
+#   - If verification fails, the old token is NOT revoked and the secret is NOT updated
+#   - If revocation fails, the new token is already in place — no service impact
+
+on:
+  schedule:
+    - cron: "0 9 1 * *"  # 09:00 UTC on the 1st of each month
+  workflow_dispatch:  # manual rotation from Actions UI
+
+permissions:
+  contents: read
+
+jobs:
+  rotate:
+    name: Rotate FLY_API_TOKEN
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Create new deploy token
+        id: create
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_MANAGER_TOKEN }}
+        run: |
+          # Token name encodes rotation date for traceability
+          token_name="ci-deploy-$(date -u +%Y-%m-%d)"
+          new_token=$(flyctl tokens create deploy \
+            -a devops-rag-system \
+            --name "$token_name" \
+            --expiry 720h)
+          # The CLI prints "FlyV1 ..." — strip whitespace
+          new_token=$(echo "$new_token" | tr -d '[:space:]')
+          echo "::add-mask::$new_token"
+          echo "token=$new_token" >> "$GITHUB_OUTPUT"
+          echo "name=$token_name" >> "$GITHUB_OUTPUT"
+
+      - name: Verify new token works
+        env:
+          FLY_API_TOKEN: ${{ steps.create.outputs.token }}
+        run: |
+          flyctl status -a devops-rag-system >/dev/null
+          echo "New token verified."
+
+      - name: Update FLY_API_TOKEN repo secret
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_ROTATE }}
+          NEW_TOKEN: ${{ steps.create.outputs.token }}
+        run: |
+          gh secret set FLY_API_TOKEN \
+            --body "$NEW_TOKEN" \
+            --repo "${{ github.repository }}"
+          echo "Secret updated."
+
+      - name: Revoke old deploy tokens
+        # Continue even if revocation fails — the new token is already live
+        continue-on-error: true
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_MANAGER_TOKEN }}
+          NEW_TOKEN_NAME: ${{ steps.create.outputs.name }}
+        run: |
+          # List all deploy tokens for this app, revoke any starting with "ci-deploy-"
+          # except the one we just created.
+          flyctl tokens list -a devops-rag-system --json | python3 -c "
+          import sys, json, subprocess
+          new_name = '$NEW_TOKEN_NAME'
+          tokens = json.load(sys.stdin)
+          for t in tokens:
+              name = t.get('name', '')
+              if name.startswith('ci-deploy-') and name != new_name:
+                  tid = t.get('id') or t.get('token_id')
+                  print(f'Revoking {name} ({tid})')
+                  subprocess.run(['flyctl', 'tokens', 'revoke', tid], check=False)
+          "
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Token rotation failed. The previous FLY_API_TOKEN is still in place. Check the run log and re-run manually."
